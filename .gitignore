@@ -1,0 +1,13 @@
+/_docs/
+
+node_modules/
+
+# TypeScript build output
+*.tsbuildinfo
+dist/
+build/
+
+# Environment and local configuration
+.env
+.env.*
+!.env.example
