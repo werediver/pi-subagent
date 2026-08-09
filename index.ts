@@ -19,6 +19,19 @@ export type SubagentResult = {
 	error?: string;
 };
 
+type SubagentProgress = {
+	status: "running";
+	text?: string;
+	currentTool?: string;
+	turns: number;
+};
+
+function formatProgress(progress: SubagentProgress): string {
+	if (progress.currentTool) return `Subagent is using ${progress.currentTool} (turn ${progress.turns})...`;
+	if (progress.text) return progress.text;
+	return `Subagent is working (turn ${progress.turns})...`;
+}
+
 function getFinalAssistantText(messages: readonly unknown[]): string {
 	for (let index = messages.length - 1; index >= 0; index--) {
 		const message = messages[index] as {
@@ -43,7 +56,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Delegate a task to an independent subagent and return its final message.",
 		parameters: SubagentParams,
 
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const abortSignal = signal ?? new AbortController().signal;
 			const resourceLoader = new DefaultResourceLoader({
 				cwd: ctx.cwd,
@@ -64,6 +77,46 @@ export default function (pi: ExtensionAPI) {
 			});
 
 			let aborting = false;
+			let turns = 0;
+			let currentTool: string | undefined;
+			let lastProgressText: string | undefined;
+
+			const emitProgress = (message?: unknown) => {
+				if (!onUpdate) return;
+				const text = message ? getFinalAssistantText([message]) : undefined;
+				if (text !== undefined) lastProgressText = text;
+				const progress: SubagentProgress = {
+					status: "running",
+					text: lastProgressText,
+					currentTool,
+					turns,
+				};
+				onUpdate({
+					content: [{ type: "text", text: formatProgress(progress) }],
+					details: progress,
+				});
+			};
+
+			const unsubscribe = session.subscribe((event) => {
+				switch (event.type) {
+					case "turn_start":
+						turns += 1;
+						emitProgress();
+						break;
+					case "message_update":
+						if (event.message && event.message.role === "assistant") emitProgress(event.message);
+						break;
+					case "tool_execution_start":
+						currentTool = event.toolName;
+						emitProgress();
+						break;
+					case "tool_execution_end":
+						currentTool = undefined;
+						emitProgress();
+						break;
+				}
+			});
+
 			const abort = () => {
 				aborting = true;
 				void session.abort();
@@ -102,6 +155,7 @@ export default function (pi: ExtensionAPI) {
 				};
 			} finally {
 				abortSignal.removeEventListener("abort", abort);
+				unsubscribe();
 				session.dispose();
 			}
 		},
