@@ -240,18 +240,21 @@ A role session is a single-writer resource. Concurrent requests for the same
 should serialize them; the user-visible behavior while waiting remains open.
 
 Concurrency across independent subagent invocations is controlled by the
-extension runner rather than by a special batch mode. The base runner uses one
-semaphore shared by the extension instance, limiting the number of child
-prompts actively executing in that Pi process. Requests beyond the limit wait
-for a slot and must remain cancellable while waiting. A slot covers the child
-prompt through result collection; waiting for a per-session lock does not
-consume a slot.
+extension runner rather than by a special batch mode. An optional semaphore-
+based concurrency control is a possible development: when enabled, one
+semaphore shared by the extension instance can limit the number of child
+prompts actively executing in that Pi process. Requests beyond the limit would
+wait for a slot and must remain cancellable while waiting. A slot would cover
+the child prompt through result collection; waiting for a per-session lock would
+not consume a slot. The base design does not require this global semaphore;
+the per-session single-writer lock remains the required concurrency control.
 
-The semaphore does not make execution parallel by itself. The parent agent must
-issue independent `subagent` calls separately, and the Pi host must dispatch
-those calls concurrently. If the host dispatches them serially, they remain
-serial regardless of the semaphore. Calls resolving to the same `(cwd, role)`
-session still serialize behind that session's single-writer lock.
+When enabled, the semaphore does not make execution parallel by itself. The
+parent agent must issue independent `subagent` calls separately, and the Pi
+host must dispatch those calls concurrently. If the host dispatches them
+serially, they remain serial regardless of the semaphore. Calls resolving to
+the same `(cwd, role)` session still serialize behind that session's
+single-writer lock.
 
 ### Extension state recovery
 
@@ -336,12 +339,12 @@ The subagent runner should:
 7. release the lock;
 8. return a normalized `SubagentResult`.
 
-Cancellation should abort the child. Requests waiting for either the
-extension semaphore or a per-session lock must be removed or marked cancelled
-rather than occupying the queue indefinitely. The runner should support
-wall-clock timeouts and distinguish failure, cancellation, and timeout. A child
-failure should normally be returned as a failed result rather than crashing the
-parent.
+Cancellation should abort the child. If the optional extension semaphore is
+enabled, requests waiting for it or for a per-session lock must be removed or
+marked cancelled rather than occupying the queue indefinitely. The runner
+should support wall-clock timeouts and distinguish failure, cancellation, and
+timeout. A child failure should normally be returned as a failed result rather
+than crashing the parent.
 
 Recursive subagent use is disabled by default for role sessions. If enabled,
 the runner should enforce a maximum depth.
@@ -396,9 +399,9 @@ completion state, persistence, recovery, and result retrieval.
 Explicit parallel and sequential delegation do not require special batch
 semantics in the base design. An agent can request independent work by issuing
 multiple `subagent` tool calls in one assistant turn; the host may execute those
-calls concurrently, while the runner's semaphore bounds the number of active
-child sessions. An agent can request dependent work through successive tool
-calls, using each returned result to formulate the next task. The runner does
+calls concurrently; an optional runner semaphore may bound the number of
+active child sessions. An agent can request dependent work through successive
+tool calls, using each returned result to formulate the next task. The runner does
 not infer dependencies, preserve a workflow graph, or automatically pass prior
 results; the parent formulates each next task. This naturally supports workflows
 such as research → plan → implementation without placeholder-based chain syntax
@@ -409,7 +412,8 @@ standardized aggregation, or reducing parent turns, but it would add schema,
 result aggregation, cancellation, and failure semantics. It is not required for
 parallel or sequential delegation and is therefore deferred. Parallel execution
 of independent child sessions remains subject to per-session single-writer
-serialization and the runner's global concurrency bound.
+serialization and, if the optional control is enabled, the runner's global
+concurrency bound.
 
 Subprocess execution through `pi --mode rpc` remains a possible later option
 for process isolation or hard termination, but is not required by the model.
@@ -441,8 +445,9 @@ No `.pi/roles/` directory is introduced.
 - Create an in-memory child session.
 - Pass the role skill, envelope, and task.
 - Return final assistant text.
-- Add timeout, cancellation, basic tool restrictions, and an extension-level
-  concurrency limit for active child sessions.
+- Add timeout, cancellation, and basic tool restrictions.
+- Optionally add semaphore-based concurrency control for active child sessions;
+  this is a possible development rather than a base-design requirement.
 
 ### Phase 2: persistent sessions
 
@@ -457,8 +462,9 @@ No `.pi/roles/` directory is introduced.
 - Allow the parent tool call to return while a child continues running.
 - Add completion reporting and explicit result retrieval.
 - Add background jobs with durable identifiers and lifecycle state.
-- Run independent child sessions concurrently under the runner's concurrency
-  bound when multiple tool calls are issued together.
+- Optionally run independent child sessions under a semaphore-based
+  concurrency bound when multiple tool calls are issued together; this is a
+  possible development, not a base-design requirement.
 - Preserve per-session single-writer locking and define same-key behavior.
 - Persist enough job state for restart, reload, cancellation, and recovery.
 
@@ -497,8 +503,8 @@ Only if a concrete use case requires them:
     a close future development target.
 12. Independent parallel delegation is expressed by multiple `subagent` tool
     calls, and dependent sequential delegation by successive calls; an
-    extension-level concurrency bound governs active child sessions rather than
-    a special batch mode.
+    optional semaphore-based concurrency bound may govern active child sessions
+    rather than a special batch mode.
 
 ## Open questions
 
