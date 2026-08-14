@@ -7,26 +7,26 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 
-const SubagentParams = Type.Object({
-	task: Type.String({ description: "The task to give to the subagent" }),
+const DelegateCmdParams = Type.Object({
+	task: Type.String({ description: "The task to delegate" }),
 });
 
-export type SubagentParams = Static<typeof SubagentParams>;
+export type DelegateCmdParams = Static<typeof DelegateCmdParams>;
 
-export type SubagentResult = {
+export type DelegateCmdResult = {
 	status: "completed" | "failed" | "cancelled";
 	text?: string;
 	error?: string;
 };
 
-type SubagentProgress = {
+type DelegateCmdProgress = {
 	status: "running";
 	text?: string;
 	currentTool?: string;
 	turns: number;
 };
 
-function formatProgress(progress: SubagentProgress): string {
+function formatProgress(progress: DelegateCmdProgress): string {
 	if (progress.currentTool) return `Subagent is using ${progress.currentTool} (turn ${progress.turns})...`;
 	if (progress.text) return progress.text;
 	return `Subagent is working (turn ${progress.turns})...`;
@@ -51,10 +51,10 @@ function getFinalAssistantText(messages: readonly unknown[]): string {
 
 export default function (pi: ExtensionAPI) {
 	pi.registerTool({
-		name: "subagent",
-		label: "Subagent",
-		description: "Delegate a task to an independent subagent and return its final message.",
-		parameters: SubagentParams,
+		name: "delegate",
+		label: "Delegate",
+		description: "Delegate a task to a subagent with a separate context window and return its final message.",
+		parameters: DelegateCmdParams,
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const abortSignal = signal ?? new AbortController().signal;
@@ -85,7 +85,7 @@ export default function (pi: ExtensionAPI) {
 				if (!onUpdate) return;
 				const text = message ? getFinalAssistantText([message]) : undefined;
 				if (text !== undefined) lastProgressText = text;
-				const progress: SubagentProgress = {
+				const progress: DelegateCmdProgress = {
 					status: "running",
 					text: lastProgressText,
 					currentTool,
@@ -128,7 +128,7 @@ export default function (pi: ExtensionAPI) {
 			try {
 				await session.prompt(params.task);
 				if (aborting || abortSignal.aborted) {
-					const result: SubagentResult = { status: "cancelled", error: "Subagent invocation was cancelled." };
+					const result: DelegateCmdResult = { status: "cancelled", error: "Subagent invocation was cancelled." };
 					return {
 						content: [{ type: "text", text: result.error ?? "Subagent invocation was cancelled." }],
 						details: result,
@@ -137,14 +137,14 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				const text = getFinalAssistantText(session.messages);
-				const result: SubagentResult = { status: "completed", text };
+				const result: DelegateCmdResult = { status: "completed", text };
 				return {
 					content: [{ type: "text", text: text || "(subagent returned no text)" }],
 					details: result,
 				};
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				const result: SubagentResult = {
+				const result: DelegateCmdResult = {
 					status: aborting || abortSignal.aborted ? "cancelled" : "failed",
 					error: message,
 				};
