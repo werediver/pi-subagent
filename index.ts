@@ -1,14 +1,18 @@
+import { readFileSync } from "node:fs";
 import {
 	createAgentSession,
 	DefaultResourceLoader,
 	getAgentDir,
+	parseFrontmatter,
 	SessionManager,
 	type ExtensionAPI,
+	type Skill,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 
 const DelegateCmdParams = Type.Object({
 	task: Type.String({ description: "The task to delegate" }),
+	skills: Type.Optional(Type.Array(Type.String(), { description: "Skill names to pre-load into the subagent session" })),
 });
 
 export type DelegateCmdParams = Static<typeof DelegateCmdParams>;
@@ -49,6 +53,44 @@ function getFinalAssistantText(messages: readonly unknown[]): string {
 	return "";
 }
 
+function resolvePreloadedSkills(availableSkills: readonly Skill[], requestedNames?: readonly string[]): Skill[] {
+	if (!requestedNames || requestedNames.length === 0) return [];
+
+	const skillsByName = new Map(availableSkills.map((skill) => [skill.name, skill]));
+	const uniqueNames = [...new Set(requestedNames)];
+	const missingNames = uniqueNames.filter((name) => !skillsByName.has(name));
+	if (missingNames.length > 0) {
+		const availableNames = availableSkills.map((skill) => skill.name);
+		const suffix = availableNames.length > 0 ? ` Available skills: ${availableNames.join(", ")}.` : "";
+		throw new Error(`Unknown skill${missingNames.length === 1 ? "" : "s"}: ${missingNames.join(", ")}.${suffix}`);
+	}
+
+	return uniqueNames.map((name) => skillsByName.get(name)!);
+}
+
+function escapeXmlAttribute(value: string): string {
+	return value
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/\"/g, "&quot;")
+		.replace(/'/g, "&apos;");
+}
+
+function formatPreloadedSkills(skills: readonly Skill[]): string {
+	const blocks = skills.map((skill) => {
+		const body = parseFrontmatter(readFileSync(skill.filePath, "utf-8")).body;
+		return `<skill name="${escapeXmlAttribute(skill.name)}" location="${escapeXmlAttribute(skill.filePath)}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
+	});
+
+	return [
+		"The following skills were explicitly pre-loaded for this task. Follow their instructions when carrying out the task.",
+		"<preloaded_skills>",
+		blocks.join("\n\n"),
+		"</preloaded_skills>",
+	].join("\n");
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "delegate",
@@ -58,6 +100,7 @@ export default function (pi: ExtensionAPI) {
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const abortSignal = signal ?? new AbortController().signal;
+			let preloadedSkills: Skill[] = [];
 			const resourceLoader = new DefaultResourceLoader({
 				cwd: ctx.cwd,
 				agentDir: getAgentDir(),
@@ -65,6 +108,12 @@ export default function (pi: ExtensionAPI) {
 				noExtensions: true,
 				noPromptTemplates: true,
 				noThemes: true,
+				skillsOverride: (current) => {
+					preloadedSkills = resolvePreloadedSkills(current.skills, params.skills);
+					return current;
+				},
+				appendSystemPromptOverride: (current) =>
+					preloadedSkills.length > 0 ? [...current, formatPreloadedSkills(preloadedSkills)] : current,
 			});
 			await resourceLoader.reload();
 
