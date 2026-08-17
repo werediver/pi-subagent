@@ -1,21 +1,207 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
 	createAgentSession,
 	DefaultResourceLoader,
 	getAgentDir,
+	CONFIG_DIR_NAME,
 	parseFrontmatter,
 	SessionManager,
 	type ExtensionAPI,
+	type ExtensionContext,
 	type Skill,
 } from "@earendil-works/pi-coding-agent";
+import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
+
+type ModelClassDefinition =
+	| {
+		model: string;
+		provider?: string;
+		thinkingLevel?: ModelThinkingLevel;
+	}
+	| {
+		base: string;
+		thinkingLevel?: ModelThinkingLevel;
+	};
+
+type ParsedExtensionConfig = {
+	modelClasses: Record<string, ModelClassDefinition>;
+};
+
+type ExtensionConfig = {
+	modelClasses: Record<string, ModelClassDefinition>;
+};
 
 const DelegateCmdParams = Type.Object({
 	task: Type.String({ description: "The task to delegate" }),
-	skills: Type.Optional(Type.Array(Type.String(), { description: "Skill names to pre-load into the subagent session" })),
+	skills: Type.Optional(Type.Array(Type.String(), {
+		description:
+			"Names of the skills advised for executing the task; these skills will be pre-loaded into the subagent context"
+	})),
+	modelClass: Type.Optional(Type.String({
+		description: "Model class to use for the subagent; defaults to parent",
+	})),
 });
 
 export type DelegateCmdParams = Static<typeof DelegateCmdParams>;
+
+function readJsonFile(path: string): unknown {
+	try {
+		return JSON.parse(readFileSync(path, "utf-8"));
+	} catch (error) {
+		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return undefined;
+		const message = error instanceof Error ? error.message : String(error);
+		throw new Error(`Could not read subagent configuration at ${path}: ${message}`);
+	}
+}
+
+function parseExtensionConfig(value: unknown, path: string): ParsedExtensionConfig {
+	function isRecord(value: unknown): value is Record<string, unknown> {
+		return value !== null && typeof value === "object" && !Array.isArray(value);
+	}
+
+	function isModelThinkingLevel(value: unknown): value is ModelThinkingLevel {
+		return value === "off" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max";
+	}
+
+	if (value === undefined) return { modelClasses: {} };
+	if (!isRecord(value)) {
+		throw new Error(`Extension configuration at ${path} must be a JSON object.`);
+	}
+
+	const rawModelClasses = value.modelClasses;
+	if (rawModelClasses === undefined) return { modelClasses: {} };
+	if (!isRecord(rawModelClasses)) {
+		throw new Error(`The modelClasses property in ${path} must be a JSON object.`);
+	}
+
+	const modelClasses: Record<string, ModelClassDefinition> = {};
+	for (const [name, rawClass] of Object.entries(rawModelClasses)) {
+		if (!isRecord(rawClass)) {
+			throw new Error(`Model class ${JSON.stringify(name)} in ${path} must be an object.`);
+		}
+
+		let base: string | undefined;
+		let model: string | undefined;
+		let provider: string | undefined;
+		let thinkingLevel: ModelThinkingLevel | undefined;
+		if ("base" in rawClass) {
+			if (typeof rawClass.base !== "string" || rawClass.base.trim() === "") {
+				throw new Error(`Model class ${JSON.stringify(name)} in ${path} has an invalid base.`);
+			}
+			base = rawClass.base;
+		}
+		if ("model" in rawClass) {
+			if (typeof rawClass.model !== "string" || rawClass.model.trim() === "") {
+				throw new Error(`Model class ${JSON.stringify(name)} in ${path} has an invalid model.`);
+			}
+			model = rawClass.model;
+		}
+		if ("provider" in rawClass) {
+			if (typeof rawClass.provider !== "string" || rawClass.provider.trim() === "") {
+				throw new Error(`Model class ${JSON.stringify(name)} in ${path} has an invalid provider.`);
+			}
+			provider = rawClass.provider;
+		}
+		if ("thinkingLevel" in rawClass) {
+			if (!isModelThinkingLevel(rawClass.thinkingLevel)) {
+				throw new Error(`Model class ${JSON.stringify(name)} in ${path} has an invalid thinkingLevel.`);
+			}
+			thinkingLevel = rawClass.thinkingLevel;
+		}
+		if (model !== undefined && base !== undefined) {
+			throw new Error(`Model class ${JSON.stringify(name)} in ${path} cannot specify both model and base.`);
+		}
+		if (model === undefined && base === undefined) {
+			throw new Error(`Model class ${JSON.stringify(name)} in ${path} must define either a model or a base class.`);
+		}
+		if (base !== undefined) {
+			if (provider !== undefined) {
+				throw new Error(`Model class ${JSON.stringify(name)} in ${path} cannot specify a provider when using a base class.`);
+			}
+			modelClasses[name] = thinkingLevel === undefined ? { base } : { base, thinkingLevel };
+		} else {
+			modelClasses[name] = {
+				model: model!,
+				...(provider === undefined ? {} : { provider }),
+				...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+			};
+		}
+	}
+
+	return { modelClasses };
+}
+
+function loadExtensionConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): ExtensionConfig {
+	const globalPath = join(getAgentDir(), "subagent.json");
+	const projectPath = join(ctx.cwd, CONFIG_DIR_NAME, "subagent.json");
+	const globalConfig = parseExtensionConfig(readJsonFile(globalPath), globalPath);
+	const projectConfig =
+		parseExtensionConfig(ctx.isProjectTrusted() ? readJsonFile(projectPath) : undefined, projectPath);
+	return {
+		modelClasses: {
+			...globalConfig.modelClasses,
+			...projectConfig.modelClasses,
+		},
+	};
+}
+
+function resolveModelClass(
+	requestedClass: string | undefined,
+	config: ExtensionConfig,
+	ctx: Pick<ExtensionContext, "model" | "thinkingLevel" | "modelRegistry">,
+): { model: Model<any>; thinkingLevel?: ModelThinkingLevel } {
+	const className = requestedClass?.trim() || "parent";
+	const availableModels = ctx.modelRegistry.getAll();
+	const defaultProvider = ctx.model?.provider;
+	const modelClasses = config.modelClasses;
+	const resolving = new Set<string>();
+
+	const resolve = (name: string): { model: Model<any>; thinkingLevel?: ModelThinkingLevel } => {
+		if (resolving.has(name)) throw new Error(`Circular model class reference involving ${JSON.stringify(name)}.`);
+		resolving.add(name);
+		try {
+			if (name === "parent") {
+				if (!ctx.model) throw new Error("The parent session has no active model.");
+				return { model: ctx.model, thinkingLevel: ctx.thinkingLevel };
+			}
+			const classConfig = modelClasses[name];
+			if (!classConfig) {
+				throw new Error(`Unknown model class ${JSON.stringify(name)}. Configure it in subagent.json.`);
+			}
+			if ("base" in classConfig) {
+				const base = resolve(classConfig.base);
+				return {
+					model: base.model,
+					thinkingLevel: classConfig.thinkingLevel ?? base.thinkingLevel,
+				};
+			}
+
+			if (classConfig.model === undefined) {
+				throw new Error(`Model class ${JSON.stringify(name)} must define a model or a base class.`);
+			}
+			const provider = classConfig.provider ?? defaultProvider;
+			if (!provider) {
+				throw new Error(`Model class ${JSON.stringify(name)} needs a provider because the parent session has no active model.`);
+			}
+			const model = availableModels.find((model) => model.id === classConfig.model && model.provider === provider);
+			if (!model) {
+				const qualifiedModel = `${provider}/${classConfig.model}`;
+				throw new Error(`Model ${JSON.stringify(qualifiedModel)} for model class ${JSON.stringify(name)} was not found.`);
+			}
+			return {
+				model,
+				thinkingLevel: classConfig.thinkingLevel ?? ctx.thinkingLevel,
+			};
+		} finally {
+			resolving.delete(name);
+		}
+	};
+
+	return resolve(className);
+}
+
 
 export type DelegateCmdResult = {
 	status: "completed" | "failed" | "cancelled";
@@ -100,6 +286,19 @@ export default function (pi: ExtensionAPI) {
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const abortSignal = signal ?? new AbortController().signal;
+			let resolvedModel: { model: Model<any>; thinkingLevel?: ModelThinkingLevel };
+			try {
+				const config = loadExtensionConfig(ctx);
+				resolvedModel = resolveModelClass(params.modelClass, config, ctx);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				const result: DelegateCmdResult = { status: "failed", error: message };
+				return {
+					content: [{ type: "text", text: message }],
+					details: result,
+					isError: true,
+				};
+			}
 			let preloadedSkills: Skill[] = [];
 			const resourceLoader = new DefaultResourceLoader({
 				cwd: ctx.cwd,
@@ -119,8 +318,8 @@ export default function (pi: ExtensionAPI) {
 
 			const { session } = await createAgentSession({
 				cwd: ctx.cwd,
-				model: ctx.model,
-				thinkingLevel: ctx.thinkingLevel,
+				model: resolvedModel.model,
+				thinkingLevel: resolvedModel.thinkingLevel,
 				resourceLoader,
 				sessionManager: SessionManager.inMemory(ctx.cwd),
 			});

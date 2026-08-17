@@ -76,14 +76,25 @@ If `modelClass` is omitted, resolution defaults to `parent` class.
 
 ## Model class configuration and cost safety
 
-The implementation owns the mapping from classes to concrete provider/model configuration:
+The implementation owns the mapping from classes to concrete provider/model configuration. If not specified, `provider` defaults to the parent session's provider. A model class can be derived from a `base` class overriding some of its properties.
 
-```yaml
-modelClasses:
-  alternative:
-    model: provider/independent-review-model
-  fast:
-    model: provider/fast-model
+```json
+{
+  "modelClasses": {
+    "fast": {
+      "model": "fast-model",
+      "thinkingLevel": "low"
+    },
+    "alternative": {
+      "model": "independent-review-model",
+      "provider": "provider"
+    },
+    "alternative-fast": {
+      "base": "alternative",
+      "thinkingLevel": "low"
+    }
+  }
+}
 ```
 
 This gives model selection the following properties:
@@ -91,6 +102,10 @@ This gives model selection the following properties:
 - The calling model can express intent without knowing the exact model names
 - The implementation retains control over concrete models and cost
 - Deployments can change model mappings without changing skills or callers
+
+### Project-level overrides
+
+The project-level extension configuration can define new model classes or replace certain classes from the global configuration.
 
 ## Invocation interface
 
