@@ -31,10 +31,6 @@ type ModelClassDefinition =
 		description: string;
 	};
 
-type ParsedExtensionConfig = {
-	modelClasses: Record<string, ModelClassDefinition>;
-};
-
 type ExtensionConfig = {
 	modelClasses: Record<string, ModelClassDefinition>;
 };
@@ -65,11 +61,11 @@ function readJsonFile(path: string): unknown {
 	} catch (error) {
 		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return undefined;
 		const message = error instanceof Error ? error.message : String(error);
-		throw new Error(`Could not read subagent configuration at ${path}: ${message}`);
+		throw new Error(`Could not read extension configuration at ${path}: ${message}`);
 	}
 }
 
-function parseExtensionConfig(value: unknown, path: string): ParsedExtensionConfig {
+function parseExtensionConfig(value: unknown, path: string): ExtensionConfig {
 	function isRecord(value: unknown): value is Record<string, unknown> {
 		return value !== null && typeof value === "object" && !Array.isArray(value);
 	}
@@ -222,9 +218,6 @@ function resolveModelClass(
 				throw new Error(`Model class ${JSON.stringify(name)} must define a model or a base class.`);
 			}
 
-			if (classConfig.model === undefined) {
-				throw new Error(`Model class ${JSON.stringify(name)} must define a model or a base class.`);
-			}
 			const provider = classConfig.provider ?? mainModel?.model.provider;
 			if (!provider) {
 				throw new Error(`Model class ${JSON.stringify(name)} needs a provider because the main session has no active model.`);
@@ -246,8 +239,7 @@ function resolveModelClass(
 	return resolve(className);
 }
 
-
-export type DelegateCmdResult = {
+type DelegateCmdResult = {
 	status: "completed" | "failed" | "cancelled";
 	text?: string;
 	error?: string;
