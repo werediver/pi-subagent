@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	createAgentSession,
 	DefaultResourceLoader,
@@ -19,10 +20,15 @@ type ModelClassDefinition =
 		model: string;
 		provider?: string;
 		thinkingLevel?: ModelThinkingLevel;
+		description?: string;
 	}
 	| {
 		base: string;
 		thinkingLevel?: ModelThinkingLevel;
+		description?: string;
+	}
+	| {
+		description: string;
 	};
 
 type ParsedExtensionConfig = {
@@ -32,6 +38,13 @@ type ParsedExtensionConfig = {
 type ExtensionConfig = {
 	modelClasses: Record<string, ModelClassDefinition>;
 };
+
+type ModelSettings = {
+	model: Model<any>;
+	thinkingLevel?: ModelThinkingLevel;
+};
+
+const extensionSourcePath = fileURLToPath(import.meta.url);
 
 const DelegateCmdParams = Type.Object({
 	task: Type.String({ description: "The task to delegate" }),
@@ -86,6 +99,7 @@ function parseExtensionConfig(value: unknown, path: string): ParsedExtensionConf
 		let model: string | undefined;
 		let provider: string | undefined;
 		let thinkingLevel: ModelThinkingLevel | undefined;
+		let description: string | undefined;
 		if ("base" in rawClass) {
 			if (typeof rawClass.base !== "string" || rawClass.base.trim() === "") {
 				throw new Error(`Model class ${JSON.stringify(name)} in ${path} has an invalid base.`);
@@ -110,6 +124,23 @@ function parseExtensionConfig(value: unknown, path: string): ParsedExtensionConf
 			}
 			thinkingLevel = rawClass.thinkingLevel;
 		}
+		if ("description" in rawClass) {
+			if (typeof rawClass.description !== "string" || rawClass.description.trim() === "") {
+				throw new Error(`Model class ${JSON.stringify(name)} in ${path} has an invalid description.`);
+			}
+			description = rawClass.description;
+		}
+		const isBuiltIn = name === "parent" || name === "main";
+		if (isBuiltIn) {
+			if (model !== undefined || base !== undefined || provider !== undefined || thinkingLevel !== undefined) {
+				throw new Error(`Built-in model class ${JSON.stringify(name)} in ${path} may only specify a description.`);
+			}
+			if (description === undefined) {
+				throw new Error(`Built-in model class ${JSON.stringify(name)} in ${path} must specify a description.`);
+			}
+			modelClasses[name] = { description };
+			continue;
+		}
 		if (model !== undefined && base !== undefined) {
 			throw new Error(`Model class ${JSON.stringify(name)} in ${path} cannot specify both model and base.`);
 		}
@@ -120,12 +151,17 @@ function parseExtensionConfig(value: unknown, path: string): ParsedExtensionConf
 			if (provider !== undefined) {
 				throw new Error(`Model class ${JSON.stringify(name)} in ${path} cannot specify a provider when using a base class.`);
 			}
-			modelClasses[name] = thinkingLevel === undefined ? { base } : { base, thinkingLevel };
+			modelClasses[name] = {
+				base,
+				...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+				...(description === undefined ? {} : { description }),
+			};
 		} else {
 			modelClasses[name] = {
 				model: model!,
 				...(provider === undefined ? {} : { provider }),
 				...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+				...(description === undefined ? {} : { description }),
 			};
 		}
 	}
@@ -151,20 +187,24 @@ function resolveModelClass(
 	requestedClass: string | undefined,
 	config: ExtensionConfig,
 	ctx: Pick<ExtensionContext, "model" | "thinkingLevel" | "modelRegistry">,
-): { model: Model<any>; thinkingLevel?: ModelThinkingLevel } {
+	mainModel: ModelSettings | undefined,
+): ModelSettings {
 	const className = requestedClass?.trim() || "parent";
 	const availableModels = ctx.modelRegistry.getAll();
-	const defaultProvider = ctx.model?.provider;
 	const modelClasses = config.modelClasses;
 	const resolving = new Set<string>();
 
-	const resolve = (name: string): { model: Model<any>; thinkingLevel?: ModelThinkingLevel } => {
+	const resolve = (name: string): ModelSettings => {
 		if (resolving.has(name)) throw new Error(`Circular model class reference involving ${JSON.stringify(name)}.`);
 		resolving.add(name);
 		try {
 			if (name === "parent") {
 				if (!ctx.model) throw new Error("The parent session has no active model.");
 				return { model: ctx.model, thinkingLevel: ctx.thinkingLevel };
+			}
+			if (name === "main") {
+				if (!mainModel) throw new Error("The main session has no active model.");
+				return mainModel;
 			}
 			const classConfig = modelClasses[name];
 			if (!classConfig) {
@@ -178,12 +218,16 @@ function resolveModelClass(
 				};
 			}
 
+			if (!("model" in classConfig)) {
+				throw new Error(`Model class ${JSON.stringify(name)} must define a model or a base class.`);
+			}
+
 			if (classConfig.model === undefined) {
 				throw new Error(`Model class ${JSON.stringify(name)} must define a model or a base class.`);
 			}
-			const provider = classConfig.provider ?? defaultProvider;
+			const provider = classConfig.provider ?? mainModel?.model.provider;
 			if (!provider) {
-				throw new Error(`Model class ${JSON.stringify(name)} needs a provider because the parent session has no active model.`);
+				throw new Error(`Model class ${JSON.stringify(name)} needs a provider because the main session has no active model.`);
 			}
 			const model = availableModels.find((model) => model.id === classConfig.model && model.provider === provider);
 			if (!model) {
@@ -239,6 +283,50 @@ function getFinalAssistantText(messages: readonly unknown[]): string {
 	return "";
 }
 
+function getAvailableModelClassNames(
+	config: ExtensionConfig,
+	ctx: Pick<ExtensionContext, "model" | "thinkingLevel" | "modelRegistry">,
+	mainModel: ModelSettings | undefined,
+): string[] {
+	const names: string[] = [];
+	const rootModel = mainModel ?? (ctx.model ? { model: ctx.model, thinkingLevel: ctx.thinkingLevel } : undefined);
+
+	if (ctx.model) names.push("parent");
+	if (rootModel) names.push("main");
+
+	for (const name of Object.keys(config.modelClasses).sort()) {
+		if (name === "parent" || name === "main") continue;
+		try {
+			resolveModelClass(name, config, ctx, rootModel);
+			names.push(name);
+		} catch {
+			// Do not advertise classes whose configured model is unavailable.
+		}
+	}
+
+	return names;
+}
+
+function formatAvailableModelClasses(names: readonly string[], config: ExtensionConfig): string {
+	const descriptions = new Map([
+		["parent", "The parent session model (default)"],
+		["main", "The main session model"],
+	]);
+	const entries = names.map((name) => {
+		const description = config.modelClasses[name]?.description ?? descriptions.get(name);
+		return description
+			? `- ${JSON.stringify(name)}: ${description}`
+			: `- ${JSON.stringify(name)}`;
+	});
+
+	return [
+		"The following model classes are available for the `delegate` tool. Set `modelClass` to one of these names.",
+		"<delegate_modelClass_options>",
+		entries.join("\n"),
+		"</delegate_modelClass_options>",
+	].join("\n");
+}
+
 function resolvePreloadedSkills(availableSkills: readonly Skill[], requestedNames?: readonly string[]): Skill[] {
 	if (!requestedNames || requestedNames.length === 0) return [];
 
@@ -270,14 +358,31 @@ function formatPreloadedSkills(skills: readonly Skill[]): string {
 	});
 
 	return [
-		"The following skills were explicitly pre-loaded for this task. Follow their instructions when carrying out the task.",
+		"The following skills were explicitly pre-loaded for this task. Respect them when carrying out the task.",
 		"<preloaded_skills>",
 		blocks.join("\n\n"),
 		"</preloaded_skills>",
 	].join("\n");
 }
 
-export default function (pi: ExtensionAPI) {
+function createExtensionFactory(mainModel: ModelSettings | undefined): (pi: ExtensionAPI) => void {
+	return (pi) => registerExtension(pi, mainModel);
+}
+
+function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefined) {
+	pi.on("before_agent_start", (event, ctx) => {
+		try {
+			const config = loadExtensionConfig(ctx);
+			const names = getAvailableModelClassNames(config, ctx, mainModel);
+			return {
+				systemPrompt: `${event.systemPrompt}\n\n${formatAvailableModelClasses(names, config)}`,
+			};
+		} catch {
+			// Configuration and model-resolution errors are reported when delegation is attempted.
+			return undefined;
+		}
+	});
+
 	pi.registerTool({
 		name: "delegate",
 		label: "Delegate",
@@ -286,10 +391,11 @@ export default function (pi: ExtensionAPI) {
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const abortSignal = signal ?? new AbortController().signal;
-			let resolvedModel: { model: Model<any>; thinkingLevel?: ModelThinkingLevel };
+			const rootModel = mainModel ?? (ctx.model ? { model: ctx.model, thinkingLevel: ctx.thinkingLevel } : undefined);
+			let resolvedModel: ModelSettings;
 			try {
 				const config = loadExtensionConfig(ctx);
-				resolvedModel = resolveModelClass(params.modelClass, config, ctx);
+				resolvedModel = resolveModelClass(params.modelClass, config, ctx, rootModel);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				const result: DelegateCmdResult = { status: "failed", error: message };
@@ -303,8 +409,14 @@ export default function (pi: ExtensionAPI) {
 			const resourceLoader = new DefaultResourceLoader({
 				cwd: ctx.cwd,
 				agentDir: getAgentDir(),
-				// No extensions also means no nested subagents.
-				noExtensions: true,
+				extensionsOverride: (current) => ({
+					...current,
+					extensions: current.extensions.filter(
+						(extension) =>
+							extension.path !== extensionSourcePath && extension.resolvedPath !== extensionSourcePath,
+					),
+				}),
+				extensionFactories: [createExtensionFactory(rootModel)],
 				noPromptTemplates: true,
 				noThemes: true,
 				skillsOverride: (current) => {
@@ -408,4 +520,8 @@ export default function (pi: ExtensionAPI) {
 			}
 		},
 	});
+}
+
+export default function (pi: ExtensionAPI) {
+	registerExtension(pi, undefined);
 }

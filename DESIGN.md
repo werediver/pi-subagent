@@ -18,7 +18,7 @@ This approach allows for a small implementation, uniform skill reuse, and expres
 
 Roles are, arguably, inconsequential; skills are what matters for good performance.
 
-Instead of what a `reasearcher` role is, define how to `research`, etc.
+Instead of what a `researcher` role is, define how to `research`, etc.
 
 The invocation may specify skills to be pre-loaded into a subagent session:
 
@@ -54,15 +54,7 @@ delegate({
 
 ## Model classes
 
-The caller selects a model _class_, not an exact model identifier:
-
-```ts
-type ModelClass =
-  | "parent"
-  | "main"
-  | "alternative"
-  | "fast";
-```
+The caller selects a model _class_ name, not an exact model identifier. Names such as `parent`, `main`, `alternative`, and `fast` are examples; deployments can define others.
 
 The final vocabulary is deployment-facing configuration, but the classes have
 the following intended meanings:
@@ -74,24 +66,35 @@ the following intended meanings:
 
 If `modelClass` is omitted, resolution defaults to `parent` class.
 
+Delegated sessions can invoke `delegate` themselves. A child loads the normal extension set, while this extension is registered again with the top-level session's model settings. Thus, `parent` always resolves relative to the immediate caller, while `main` resolves relative to the top-level session at every nesting depth.
+
 ## Model class configuration and cost safety
 
-The implementation owns the mapping from classes to concrete provider/model configuration. If not specified, `provider` defaults to the parent session's provider. A model class can be derived from a `base` class overriding some of its properties.
+The implementation owns the mapping from classes to concrete provider/model configuration. If not specified, `provider` defaults to the main session's provider. A model class can be derived from a `base` class overriding some of its properties. An optional `description` is shown to agents when they choose a class. The built-in `parent` and `main` classes have default descriptions; if configured, they must specify a `description` and no other properties, overriding the defaults.
 
 ```json
 {
   "modelClasses": {
+    "parent": {
+      "description": "Use the calling agent's model"
+    },
+    "main": {
+      "description": "Use the top-level session's model"
+    },
     "fast": {
       "model": "fast-model",
-      "thinkingLevel": "low"
+      "thinkingLevel": "low",
+      "description": "Optimized for latency and cost"
     },
     "alternative": {
       "model": "independent-review-model",
-      "provider": "provider"
+      "provider": "provider",
+      "description": "A meaningfully different perspective"
     },
     "alternative-fast": {
       "base": "alternative",
-      "thinkingLevel": "low"
+      "thinkingLevel": "low",
+      "description": "A fast independent review"
     }
   }
 }
@@ -115,7 +118,7 @@ The invocation parameters are:
 type SubagentRequest = {
   task: string;
   skills?: string[];
-  modelClass?: ModelClass;
+  modelClass?: string;
 };
 ```
 
