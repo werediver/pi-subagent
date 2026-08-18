@@ -249,13 +249,80 @@ type DelegateCmdProgress = {
 	status: "running";
 	text?: string;
 	currentTool?: string;
+	currentToolArgs?: unknown;
+	toolText?: string;
 	turns: number;
 };
 
+function formatToolArgs(args: unknown): string {
+	if (!args || typeof args !== "object") return "";
+	const values = args as Record<string, unknown>;
+	const parts: string[] = [];
+	for (const key of ["path", "file_path", "command", "query", "pattern", "directory", "cwd"]) {
+		if (typeof values[key] === "string" && values[key].trim()) parts.push(`${key}: ${values[key]}`);
+	}
+	if (typeof values.offset === "number" || typeof values.limit === "number") {
+		const range = [values.offset, values.limit].filter((value) => typeof value === "number").join(", ");
+		if (range) parts.push(`range: ${range}`);
+	}
+	return parts.length > 0 ? ` (${parts.join("; ")})` : "";
+}
+
 function formatProgress(progress: DelegateCmdProgress): string {
-	if (progress.currentTool) return `Subagent is using ${progress.currentTool} (turn ${progress.turns})...`;
-	if (progress.text) return progress.text;
-	return `Subagent is working (turn ${progress.turns})...`;
+	const sections = [
+		progress.text,
+		progress.currentTool
+			? `Subagent is using ${progress.currentTool}${formatToolArgs(progress.currentToolArgs)} (turn ${progress.turns})...`
+			: undefined,
+		progress.toolText ? `Tool output:\n${progress.toolText}` : undefined,
+	].filter((section): section is string => Boolean(section));
+
+	return sections.join("\n\n") || `Subagent is thinking (turn ${progress.turns})...`;
+}
+
+function getAssistantProgressText(message: unknown): string {
+	if (!message || typeof message !== "object") return "";
+	const content = "content" in message ? message.content : undefined;
+	if (!Array.isArray(content)) return "";
+
+	return content
+		.map((part: unknown) => {
+			if (!part || typeof part !== "object") return "";
+			const value = part as {
+				type?: unknown;
+				text?: unknown;
+				thinking?: unknown;
+				name?: unknown;
+				arguments?: unknown;
+			};
+			if (value.type === "text" && typeof value.text === "string") return value.text;
+			if (value.type === "thinking" && typeof value.thinking === "string") {
+				return `Thinking:\n${value.thinking}`;
+			}
+			if (value.type === "toolCall" && typeof value.name === "string") {
+				let args = "";
+				try {
+					args = value.arguments === undefined ? "" : `\n${JSON.stringify(value.arguments, null, 2)}`;
+				} catch {
+					args = "";
+				}
+				return `Tool call: ${value.name}${args}`;
+			}
+			return "";
+		})
+		.filter(Boolean)
+		.join("\n\n");
+}
+
+function getToolProgressText(result: unknown): string {
+	if (!result || typeof result !== "object" || !("content" in result) || !Array.isArray(result.content)) return "";
+	return result.content
+		.filter(
+			(part): part is { type: "text"; text: string } =>
+				Boolean(part) && typeof part === "object" && part.type === "text" && "text" in part && typeof part.text === "string",
+		)
+		.map((part) => part.text)
+		.join("\n\n");
 }
 
 function getFinalAssistantText(messages: readonly unknown[]): string {
@@ -431,16 +498,18 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 			let aborting = false;
 			let turns = 0;
 			let currentTool: string | undefined;
+			let currentToolArgs: unknown;
 			let lastProgressText: string | undefined;
+			let lastToolText: string | undefined;
 
-			const emitProgress = (message?: unknown) => {
+			const emitProgress = () => {
 				if (!onUpdate) return;
-				const text = message ? getFinalAssistantText([message]) : undefined;
-				if (text !== undefined) lastProgressText = text;
 				const progress: DelegateCmdProgress = {
 					status: "running",
 					text: lastProgressText,
 					currentTool,
+					currentToolArgs,
+					toolText: lastToolText,
 					turns,
 				};
 				onUpdate({
@@ -455,17 +524,46 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 						turns += 1;
 						emitProgress();
 						break;
+					case "message_start":
+						if (event.message.role === "assistant") {
+							lastProgressText = undefined;
+							lastToolText = undefined;
+							emitProgress();
+						}
+						break;
 					case "message_update":
-						if (event.message && event.message.role === "assistant") emitProgress(event.message);
+						if (event.message.role === "assistant") {
+							// The low-level event carries the same cumulative partial message Pi
+							// renders in its streaming assistant component. Prefer it over a
+							// potentially reduced session-level snapshot.
+							const partial = "partial" in event.assistantMessageEvent
+								? event.assistantMessageEvent.partial
+								: event.message;
+							const text = getAssistantProgressText(partial);
+							if (text) lastProgressText = text;
+							emitProgress();
+						}
 						break;
 					case "tool_execution_start":
 						currentTool = event.toolName;
+						currentToolArgs = event.args;
+						lastToolText = undefined;
 						emitProgress();
 						break;
-					case "tool_execution_end":
+					case "tool_execution_update": {
+						const text = getToolProgressText(event.partialResult);
+						if (text) lastToolText = text;
+						emitProgress();
+						break;
+					}
+					case "tool_execution_end": {
+						const text = getToolProgressText(event.result);
+						if (text) lastToolText = text;
 						currentTool = undefined;
+						currentToolArgs = undefined;
 						emitProgress();
 						break;
+					}
 				}
 			});
 
