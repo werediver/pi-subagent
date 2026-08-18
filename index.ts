@@ -13,6 +13,7 @@ import {
 	type Skill,
 } from "@earendil-works/pi-coding-agent";
 import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 
 type ModelClassDefinition =
@@ -447,6 +448,16 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 		label: "Delegate",
 		description: "Delegate a task to a subagent with a separate context window and return its final message.",
 		parameters: DelegateCmdParams,
+
+		renderCall(args, theme, context) {
+			const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
+			const modelClass = args.modelClass?.trim() || "parent";
+			const skills = args.skills?.length ? `; skills: ${args.skills.join(", ")}` : "";
+			text.setText(
+				`${theme.fg("toolTitle", theme.bold("delegate"))} ${theme.fg("muted", `(${modelClass}${skills})`)}`,
+			);
+			return text;
+		},
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const abortSignal = signal ?? new AbortController().signal;
