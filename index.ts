@@ -46,6 +46,9 @@ type ModelSettings = {
 const extensionSourcePath = fileURLToPath(import.meta.url);
 
 const DelegateCmdParams = Type.Object({
+	title: Type.String({
+		description: "Short title describing the task; prefer an imperative verb phrase",
+	}),
 	task: Type.String({ description: "The task to delegate" }),
 	skills: Type.Optional(Type.Array(Type.String(), {
 		description:
@@ -448,8 +451,9 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 			const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
 			const modelClass = args.modelClass?.trim() || "parent";
 			const skills = args.skills?.length ? ` + ${args.skills.join(", ")}` : "";
+			const title = args.title?.trim() ? ` "${args.title.trim()}"` : "";
 			text.setText(
-				`${theme.fg("toolTitle", theme.bold("delegate"))} ${theme.fg("muted", `${modelClass}${skills}`)}`,
+				`${theme.fg("toolTitle", theme.bold("delegate"))} ${theme.fg("muted", `${modelClass}${skills}${title}`)}`,
 			);
 			return text;
 		},

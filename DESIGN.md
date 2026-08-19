@@ -116,6 +116,7 @@ The invocation parameters are:
 
 ```ts
 type SubagentRequest = {
+  title: string;
   task: string;
   skills?: string[];
   modelClass?: string;
@@ -126,6 +127,7 @@ An example invocation:
 
 ```ts
 delegate({
+  title: "Investigate regression",
   task: "Find the cause of the regression and return evidence and a concise recommendation.",
   skills: ["research", "debugging"],
   modelClass: "fast",
