@@ -11,10 +11,12 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 	type Skill,
+	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
+import { SubagentToolCallRenderer } from "./subagent-tool-renderer.ts";
 
 type ModelClassDefinition =
 	| {
@@ -251,6 +253,7 @@ type DelegateCmdProgress = {
 	text?: string;
 	currentTool?: string;
 	currentToolArgs?: unknown;
+	currentToolDisplay?: string;
 	toolText?: string;
 	turns: number;
 };
@@ -273,7 +276,7 @@ function formatProgress(progress: DelegateCmdProgress): string {
 	const sections = [
 		progress.text,
 		progress.currentTool
-			? `Subagent is using ${progress.currentTool}${formatToolArgs(progress.currentToolArgs)} (turn ${progress.turns})...`
+			? `Subagent is using ${progress.currentToolDisplay ?? `${progress.currentTool}${formatToolArgs(progress.currentToolArgs)}`} (turn ${progress.turns})...`
 			: undefined,
 		progress.toolText ? `Tool output:\n${progress.toolText}` : undefined,
 	].filter((section): section is string => Boolean(section));
@@ -419,6 +422,8 @@ function createExtensionFactory(mainModel: ModelSettings | undefined): (pi: Exte
 }
 
 function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefined) {
+	let currentTheme: Theme | undefined;
+
 	pi.on("before_agent_start", (event, ctx) => {
 		try {
 			const config = loadExtensionConfig(ctx);
@@ -439,11 +444,12 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 		parameters: DelegateCmdParams,
 
 		renderCall(args, theme, context) {
+			currentTheme = theme;
 			const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
 			const modelClass = args.modelClass?.trim() || "parent";
-			const skills = args.skills?.length ? `; skills: ${args.skills.join(", ")}` : "";
+			const skills = args.skills?.length ? ` + ${args.skills.join(", ")}` : "";
 			text.setText(
-				`${theme.fg("toolTitle", theme.bold("delegate"))} ${theme.fg("muted", `(${modelClass}${skills})`)}`,
+				`${theme.fg("toolTitle", theme.bold("delegate"))} ${theme.fg("muted", `${modelClass}${skills}`)}`,
 			);
 			return text;
 		},
@@ -499,8 +505,12 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 			let turns = 0;
 			let currentTool: string | undefined;
 			let currentToolArgs: unknown;
+			let currentToolDisplay: string | undefined;
 			let lastProgressText: string | undefined;
 			let lastToolText: string | undefined;
+			const toolCallRenderer = currentTheme
+				? new SubagentToolCallRenderer(session, currentTheme, ctx.cwd)
+				: undefined;
 
 			const emitProgress = () => {
 				if (!onUpdate) return;
@@ -509,6 +519,7 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 					text: lastProgressText,
 					currentTool,
 					currentToolArgs,
+					currentToolDisplay,
 					toolText: lastToolText,
 					turns,
 				};
@@ -547,21 +558,42 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 					case "tool_execution_start":
 						currentTool = event.toolName;
 						currentToolArgs = event.args;
+						currentToolDisplay = toolCallRenderer?.renderCall(event.toolCallId, event.toolName, event.args);
 						lastToolText = undefined;
 						emitProgress();
 						break;
 					case "tool_execution_update": {
-						const text = getToolProgressText(event.partialResult);
+						const rendered = toolCallRenderer?.renderResult(
+							event.toolCallId,
+							event.toolName,
+							event.args,
+							event.partialResult,
+							true,
+							false,
+						);
+						const text = rendered || getToolProgressText(event.partialResult);
 						if (text) lastToolText = text;
 						emitProgress();
 						break;
 					}
-					case "tool_execution_end":
+					case "tool_execution_end": {
+						const rendered = toolCallRenderer?.renderResult(
+							event.toolCallId,
+							event.toolName,
+							currentToolArgs,
+							event.result,
+							false,
+							event.isError,
+						);
+						if (rendered) lastToolText = rendered;
+						emitProgress();
+						toolCallRenderer?.finish(event.toolCallId);
 						currentTool = undefined;
 						currentToolArgs = undefined;
+						currentToolDisplay = undefined;
 						lastToolText = undefined;
-						emitProgress();
 						break;
+					}
 				}
 			});
 
@@ -603,6 +635,7 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 				};
 			} finally {
 				abortSignal.removeEventListener("abort", abort);
+				toolCallRenderer?.clear();
 				unsubscribe();
 				session.dispose();
 			}
