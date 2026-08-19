@@ -293,21 +293,10 @@ function getAssistantProgressText(message: unknown): string {
 				type?: unknown;
 				text?: unknown;
 				thinking?: unknown;
-				name?: unknown;
-				arguments?: unknown;
 			};
 			if (value.type === "text" && typeof value.text === "string") return value.text;
 			if (value.type === "thinking" && typeof value.thinking === "string") {
 				return `Thinking:\n${value.thinking}`;
-			}
-			if (value.type === "toolCall" && typeof value.name === "string") {
-				let args = "";
-				try {
-					args = value.arguments === undefined ? "" : `\n${JSON.stringify(value.arguments, null, 2)}`;
-				} catch {
-					args = "";
-				}
-				return `Tool call: ${value.name}${args}`;
 			}
 			return "";
 		})
@@ -567,14 +556,12 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 						emitProgress();
 						break;
 					}
-					case "tool_execution_end": {
-						const text = getToolProgressText(event.result);
-						if (text) lastToolText = text;
+					case "tool_execution_end":
 						currentTool = undefined;
 						currentToolArgs = undefined;
+						lastToolText = undefined;
 						emitProgress();
 						break;
-					}
 				}
 			});
 
