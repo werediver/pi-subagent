@@ -1,76 +1,50 @@
 # Role-free subagents
 
-## Overview
+## Purpose
 
-A role-free subagent has no fixed role and no role definition resource type is needed.
+This extension lets a main agent delegate work to independent subagents. It is designed around skills rather than roles: roles add little when the caller can explicitly provide the capabilities a subagent needs, while skills remain reusable across different tasks.
 
-A subagent invocation then involves:
+The extension is responsible for invoking subagents, selecting their models, and returning their results. A subagent is an independent agent, not an implicit continuation of the main agent's context.
 
-- a task,
-- skills to pre-load,
-- a model class.
+## Invocation
 
-The task defines the immediate objective, pre-loaded skills bootstrap the session, and the model class selects the required capability level of the model backing the session.
-
-This approach allows for a small implementation, uniform skill reuse, and expressive power similar to role-based subagents.
-
-## Skills over roles
-
-Roles are, arguably, inconsequential; skills are what matters for good performance.
-
-Instead of what a `researcher` role is, define how to `research`, etc.
-
-The invocation may specify skills to be pre-loaded into a subagent session:
+The invocation contract is:
 
 ```ts
-delegate({
-  task: "Review the authentication changes for security and correctness.",
-  skills: ["code-review", "security-review"],
-  modelClass: "alternative",
-})
+type SubagentRequest = {
+  title: string;
+  task: string;
+  skills?: string[];
+  modelClass?: string;
+};
 ```
 
-This guarantees loading of the skills essential for the task execution and saves a few turns in the new session that otherwise would be spent on decision making and (possibly) loading the skills.
+The main agent must include relevant context in `task`; the subagent does not share the main agent's conversation context. `skills` supplies the capabilities needed for the task, and `modelClass` expresses model intent without requiring the caller to know concrete provider or model names.
 
-## Delegation as a skill
-
-Choosing when and how to delegate is itself a skill, a `task-delegation` skill. This skill belongs primarily in the main session context (but may be used for nested subagent invocation too). It can describe how to:
-
-- recognize work that benefits from delegation;
-- formulate a self-contained task;
-- choose the worker's skills;
-- choose an appropriate model class; and
-- request a useful, self-contained result.
-
-For example, the calling agent may follow `task-delegation` and produce:
+The initial result contract is:
 
 ```ts
-delegate({
-  task: "Investigate the failing session recovery test and explain the cause.",
-  skills: ["research", "debugging"],
-  modelClass: "fast",
-})
+type SubagentResult = {
+  status: "completed" | "failed" | "cancelled";
+  text?: string;
+  error?: string;
+};
 ```
+
+Results are returned as labeled tool output. They must not be silently inserted into the main agent's context as an unlabeled user message.
+
+Independent invocations may run concurrently. Dependent work is staged: the main agent passes an earlier result into the task of a later subagent. Subagents may invoke the extension themselves, so delegation can be nested.
 
 ## Model classes
 
-The caller selects a model _class_ name, not an exact model identifier. Names such as `parent`, `main`, `alternative`, and `fast` are examples; deployments can define others.
+A model class is a deployment-facing abstraction for model selection. The caller expresses intent; the extension resolves that intent to concrete provider and model settings. This preserves control over model choice, cost, and latency in configuration rather than scattering provider-specific names through callers and skills.
 
-The final vocabulary is deployment-facing configuration, but the classes have
-the following intended meanings:
+The built-in classes have stable ancestry semantics:
 
-- **`parent`** — inherit the model resolved for the immediately calling agent.
-- **`main`** — use the model resolved for the main session.
-- **`alternative`** — use a configured model intended to produce a meaningfully different perspective, such as for code review or a second opinion.
-- **`fast`** — use a configured model optimized for latency and/or cost.
+- `parent` uses the immediate caller's model.
+- `main` uses the top-level main agent's model, even through nested delegation.
 
-If `modelClass` is omitted, resolution defaults to `parent` class.
-
-Delegated sessions can invoke `delegate` themselves. A child loads the normal extension set, while this extension is registered again with the top-level session's model settings. Thus, `parent` always resolves relative to the immediate caller, while `main` resolves relative to the top-level session at every nesting depth.
-
-## Model class configuration and cost safety
-
-The implementation owns the mapping from classes to concrete provider/model configuration. If not specified, `provider` defaults to the main session's provider. A model class can be derived from a `base` class overriding some of its properties. An optional `description` is shown to agents when they choose a class. The built-in `parent` and `main` classes have default descriptions; if configured, they must specify a `description` and no other properties, overriding the defaults.
+Other classes can specify a concrete model, provider, and thinking level, or derive from another class with `base`. Global configuration provides defaults, while project-level configuration may add classes or replace configured classes.
 
 ```json
 {
@@ -79,7 +53,7 @@ The implementation owns the mapping from classes to concrete provider/model conf
       "description": "Use the calling agent's model"
     },
     "main": {
-      "description": "Use the top-level session's model"
+      "description": "Use the top-level main agent's model"
     },
     "fast": {
       "model": "fast-model",
@@ -100,55 +74,4 @@ The implementation owns the mapping from classes to concrete provider/model conf
 }
 ```
 
-This gives model selection the following properties:
-
-- The calling model can express intent without knowing the exact model names
-- The implementation retains control over concrete models and cost
-- Deployments can change model mappings without changing skills or callers
-
-### Project-level overrides
-
-The project-level extension configuration can define new model classes or replace certain classes from the global configuration.
-
-## Invocation interface
-
-The invocation parameters are:
-
-```ts
-type SubagentRequest = {
-  title: string;
-  task: string;
-  skills?: string[];
-  modelClass?: string;
-};
-```
-
-An example invocation:
-
-```ts
-delegate({
-  title: "Investigate regression",
-  task: "Find the cause of the regression and return evidence and a concise recommendation.",
-  skills: ["research", "debugging"],
-  modelClass: "fast",
-})
-```
-
-The caller must include the relevant context in the task, because the parent session is not shared with the child.
-
-## Result and composition
-
-The initial result can remain minimal:
-
-```ts
-type SubagentResult = {
-  status: "completed" | "failed" | "cancelled";
-  text?: string;
-  error?: string;
-};
-```
-
-The child returns its final response as labeled tool output. It should not be
-silently inserted into the parent as an unlabeled user message.
-
-Independent invocations can be started concurrently via batched tool calls. Dependent work is expressed through staged tool calls with the parent passing the previous result into the next task.
+The descriptions of the built-in `parent` and `main` classes may be overridden for local presentation, but their resolution semantics remain fixed. Model-class configuration is owned by the implementation, allowing deployments to change mappings without changing callers, skills, or the invocation contract.
