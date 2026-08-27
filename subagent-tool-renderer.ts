@@ -1,16 +1,21 @@
 import type { AgentSession, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { Component } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, type Component } from "@earendil-works/pi-tui";
 
 type ToolCallRendererState = {
 	state: Record<string, unknown>;
+	args?: unknown;
 	callComponent?: Component;
 	resultComponent?: Component;
 };
 
-const ANSI_ESCAPE_REGEX = /\x1b\[[0-?]*[ -\/]*[@-~]/g;
+function disposeComponent(component: Component | undefined, disposed = new Set<Component>()): void {
+	if (!component || disposed.has(component)) return;
+	disposed.add(component);
+	(component as Component & { dispose?: () => void }).dispose?.();
+}
 
 function cleanRenderedLines(lines: readonly string[]): string {
-	const cleaned = lines.map((line) => line.replace(ANSI_ESCAPE_REGEX, ""));
+	const cleaned = lines.map((line) => stripTerminalSequences(line).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, ""));
 	let start = 0;
 	let end = cleaned.length;
 	while (start < end && cleaned[start].trim() === "") start++;
@@ -39,8 +44,10 @@ export class SubagentToolCallRenderer {
 		if (!renderCall) return undefined;
 
 		const state = this.getState(toolCallId);
+		state.args = args;
 		try {
-			const component = renderCall(args as never, this.theme, this.createContext(toolCallId, args, state.callComponent, true, false));
+			const component = renderCall(args as never, this.theme, this.createContext(toolCallId, args, state.callComponent, true, false, false));
+			if (component !== state.callComponent) disposeComponent(state.callComponent);
 			state.callComponent = component;
 			return cleanRenderedLines(component.render(this.width));
 		} catch {
@@ -61,6 +68,7 @@ export class SubagentToolCallRenderer {
 		if (!renderResult) return undefined;
 
 		const state = this.getState(toolCallId);
+		const effectiveArgs = args ?? state.args;
 		try {
 			const component = renderResult(
 				result as never,
@@ -70,8 +78,9 @@ export class SubagentToolCallRenderer {
 				// hints and include the complete available output.
 				{ expanded: true, isPartial },
 				this.theme,
-				this.createContext(toolCallId, args, state.resultComponent, isPartial, isError),
+				this.createContext(toolCallId, effectiveArgs, state.resultComponent, isPartial, isError, false),
 			);
+			if (component !== state.resultComponent) disposeComponent(state.resultComponent);
 			state.resultComponent = component;
 			return cleanRenderedLines(component.render(this.width));
 		} catch {
@@ -80,10 +89,21 @@ export class SubagentToolCallRenderer {
 	}
 
 	finish(toolCallId: string): void {
+		const state = this.calls.get(toolCallId);
+		if (state) {
+			const disposed = new Set<Component>();
+			disposeComponent(state.callComponent, disposed);
+			disposeComponent(state.resultComponent, disposed);
+		}
 		this.calls.delete(toolCallId);
 	}
 
 	clear(): void {
+		const disposed = new Set<Component>();
+		for (const state of this.calls.values()) {
+			disposeComponent(state.callComponent, disposed);
+			disposeComponent(state.resultComponent, disposed);
+		}
 		this.calls.clear();
 	}
 
@@ -102,6 +122,7 @@ export class SubagentToolCallRenderer {
 		lastComponent: Component | undefined,
 		isPartial: boolean,
 		isError: boolean,
+		expanded: boolean,
 	) {
 		return {
 			args,
@@ -113,7 +134,7 @@ export class SubagentToolCallRenderer {
 			executionStarted: true,
 			argsComplete: true,
 			isPartial,
-			expanded: false,
+			expanded,
 			showImages: false,
 			isError,
 		};
