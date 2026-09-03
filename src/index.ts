@@ -22,11 +22,11 @@ import { oneLine } from "./text.ts";
 const extensionSourcePath = fileURLToPath(import.meta.url);
 
 const DelegateCmdParams = Type.Object({
-	title: Type.String({ minLength: 1, description: "Short title describing the task; prefer an imperative verb phrase" }),
+	title: Type.String({ minLength: 1, description: "Short task description; prefer imperative form" }),
 	task: Type.String({ minLength: 1, description: "The task to delegate" }),
-	skills: Type.Optional(Type.Array(Type.String({}), { description: "Names of skills for an opening delegation" })),
-	modelClass: Type.Optional(Type.String({ description: "Model class for an opening delegation; defaults to parent" })),
-	continue_session: Type.Optional(Type.String({ description: "Previously returned child session ID to continue" })),
+	skills: Type.Optional(Type.Array(Type.String({}), { description: "Skills to pre-load into a new child session" })),
+	modelClass: Type.Optional(Type.String({ description: "Model class for a new child session; defaults to `parent`" })),
+	continue_session: Type.Optional(Type.String({ description: "The ID of an existing child session to continue; omit to start a new child session" })),
 });
 export type DelegateCmdParams = Static<typeof DelegateCmdParams>;
 
@@ -56,12 +56,12 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 	pi.registerTool({
 		name: "delegate",
 		label: "Delegate",
-		description: "Delegate a task to an independent child agent. Open a child session or continue a previously returned child session.",
-		promptSnippet: "Delegate work to an independent child agent; reuse a returned session ID for follow-up work.",
+		description: "Delegate a task to a subagent in a new or existing child session",
+		promptSnippet: "Delegate a task to a subagent in a new or existing child session",
 		promptGuidelines: [
-			"Opening calls may provide modelClass and skills. A successful opening call returns a session ID.",
-			"Continuation calls must provide only continue_session, title, and task; they reuse the child session's existing model and skills.",
-			"Use the returned session ID in continue_session to add a task to the same child context. Continuations for one child are serialized; a failed or cancelled continuation stops later queued continuations.",
+			"Specify `title` and `task` always",
+			"Optionally, specify `modelClass` and `skills` when starting a new child session",
+			"When a task can benefit from the pre-populated context in an existing child session, use `continue_session` with the child session ID returned by a previous delegation request.",
 		],
 		parameters: DelegateCmdParams,
 		renderCall(args, theme, context) {
@@ -74,16 +74,16 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 			return text;
 		},
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			if (!params.title.trim()) return createDelegateToolResult(resultError("failed", "title must be a non-empty string."));
-			if (!params.task.trim()) return createDelegateToolResult(resultError("failed", "task must be a non-empty string."));
+			if (!params.title.trim()) return createDelegateToolResult(resultError("failed", "`title` must be a non-empty string."));
+			if (!params.task.trim()) return createDelegateToolResult(resultError("failed", "`task` must be a non-empty string."));
 			const abortSignal = signal ?? new AbortController().signal;
 			const hasContinuation = params.continue_session !== undefined;
 			const continuationId = params.continue_session?.trim();
 			if (hasContinuation) {
-				if (!continuationId) return createDelegateToolResult(resultError("failed", "continue_session must be a non-empty child session ID."));
-				if (params.modelClass !== undefined || params.skills !== undefined) return createDelegateToolResult(resultError("failed", "A continuation must not specify modelClass or skills."));
+				if (!continuationId) return createDelegateToolResult(resultError("failed", "`continue_session` must be a child session ID returned by a previous delegation request; omit to start a new child."));
+				if (params.modelClass !== undefined || params.skills !== undefined) return createDelegateToolResult(resultError("failed", "Do not specify `modelClass` or `skills` when continuing an existing child session."));
 				const child = registry.get(continuationId);
-				if (!child || child.cwd !== ctx.cwd) return createDelegateToolResult(resultError("failed", "Unknown, expired, or cwd-mismatched child session ID."));
+				if (!child || child.cwd !== ctx.cwd) return createDelegateToolResult(resultError("failed", "Session ID is unknown, expired, or cwd-mismatched. Use a valid child session ID returned by a previous delegation request, or omit `continue_session` to start a new child session."));
 				const result = await child.queue.enqueue({ task: params.task, signal: abortSignal, onUpdate, theme: ctx.ui.theme });
 				if (result.status === "completed") result.sessionId = continuationId;
 				return createDelegateToolResult(result);
