@@ -26,7 +26,7 @@ const DelegateCmdParams = Type.Object({
 	task: Type.String({ minLength: 1, description: "The task to delegate" }),
 	skills: Type.Optional(Type.Array(Type.String({}), { description: "Skills to pre-load into a new child session" })),
 	modelClass: Type.Optional(Type.String({ description: "Model class for a new child session; defaults to `parent`" })),
-	continue_session: Type.Optional(Type.String({ description: "The ID of an existing child session to continue; omit to start a new child session" })),
+	continue_session: Type.Optional(Type.String({ description: "The ID of an existing child session to continue; omit or leave empty to start a new child session" })),
 });
 export type DelegateCmdParams = Static<typeof DelegateCmdParams>;
 
@@ -61,14 +61,15 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 		promptGuidelines: [
 			"Specify `title` and `task` always",
 			"Optionally, specify `modelClass` and `skills` when starting a new child session",
-			"When a task can benefit from the pre-populated context in an existing child session, use `continue_session` with the child session ID returned by a previous delegation request.",
+			"When a task can benefit from the pre-populated context in an existing child session, use `continue_session` with the child session ID returned by a previous delegation request; omit it or leave it empty when starting a new child session.",
 		],
 		parameters: DelegateCmdParams,
 		renderCall(args, theme, context) {
 			const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
 			const title = args.title?.trim() ? ` "${oneLine(args.title.trim())}"` : "";
-			const summary = args.continue_session !== undefined
-				? `continue ${oneLine(args.continue_session.trim() || "(missing session ID)")}${title}`
+			const continuationId = args.continue_session?.trim();
+			const summary = continuationId
+				? `continue ${oneLine(continuationId)}${title}`
 				: `${oneLine(args.modelClass?.trim() || "parent")}${args.skills?.length ? ` + ${args.skills.map(oneLine).join(", ")}` : ""}${title}`;
 			text.setText(`${theme.fg("toolTitle", theme.bold("delegate"))} ${theme.fg("muted", summary)}`);
 			return text;
@@ -77,13 +78,11 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 			if (!params.title.trim()) return createDelegateToolResult(resultError("failed", "`title` must be a non-empty string."));
 			if (!params.task.trim()) return createDelegateToolResult(resultError("failed", "`task` must be a non-empty string."));
 			const abortSignal = signal ?? new AbortController().signal;
-			const hasContinuation = params.continue_session !== undefined;
 			const continuationId = params.continue_session?.trim();
-			if (hasContinuation) {
-				if (!continuationId) return createDelegateToolResult(resultError("failed", "`continue_session` must be a child session ID returned by a previous delegation request; omit to start a new child."));
+			if (continuationId) {
 				if (params.modelClass !== undefined || params.skills !== undefined) return createDelegateToolResult(resultError("failed", "Do not specify `modelClass` or `skills` when continuing an existing child session."));
 				const child = registry.get(continuationId);
-				if (!child || child.cwd !== ctx.cwd) return createDelegateToolResult(resultError("failed", "Session ID is unknown, expired, or cwd-mismatched. Use a valid child session ID returned by a previous delegation request, or omit `continue_session` to start a new child session."));
+				if (!child || child.cwd !== ctx.cwd) return createDelegateToolResult(resultError("failed", "Session ID is unknown, expired, or cwd-mismatched. Use a valid child session ID returned by a previous delegation request, or omit `continue_session` (or leave it empty) to start a new child session."));
 				const result = await child.queue.enqueue({ task: params.task, signal: abortSignal, onUpdate, theme: ctx.ui.theme });
 				if (result.status === "completed") result.sessionId = continuationId;
 				return createDelegateToolResult(result);
