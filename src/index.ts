@@ -6,12 +6,13 @@ import {
 	SessionManager,
 	type AgentSession,
 	type ExtensionAPI,
+	type ExtensionContext,
 	type Skill,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
-import { loadExtensionConfig } from "./config.ts";
-import { getAvailableModelClassNames, formatAvailableModelClasses, resolveModelClass, type ModelSettings } from "./model-resolver.ts";
+import { loadExtensionConfig, type ExtensionConfig } from "./config.ts";
+import { getModelClassAvailability, formatAvailableModelClasses, resolveModelClass, type ModelSettings } from "./model-resolver.ts";
 import { ContinuationQueue } from "./queue.ts";
 import { ChildRegistry, type ChildSession, disposeChild } from "./registry.ts";
 import { runChildRequest } from "./runner.ts";
@@ -35,6 +36,27 @@ function createExtensionFactory(mainModel: ModelSettings | undefined, registry: 
 }
 
 function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefined, registry = new ChildRegistry(), sourcePath = extensionSourcePath): void {
+	const notifiedConfigurationWarnings = new Set<string>();
+	let baseConfigCache: {
+		cwd: string;
+		trusted: boolean;
+		result: { config: ExtensionConfig } | { error: unknown };
+	} | undefined;
+	const getBaseConfig = (ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): ExtensionConfig => {
+		const trusted = ctx.isProjectTrusted();
+		if (baseConfigCache?.cwd === ctx.cwd && baseConfigCache.trusted === trusted) {
+			if ("config" in baseConfigCache.result) return baseConfigCache.result.config;
+			throw baseConfigCache.result.error;
+		}
+		try {
+			const config = loadExtensionConfig(ctx);
+			baseConfigCache = { cwd: ctx.cwd, trusted, result: { config } };
+			return config;
+		} catch (error) {
+			baseConfigCache = { cwd: ctx.cwd, trusted, result: { error } };
+			throw error;
+		}
+	};
 	pi.on("session_shutdown", async () => { await registry.close(); });
 	pi.on("tool_result", (event) => {
 		const details = event.toolName === "delegate" ? event.details as DelegateCmdResult | undefined : undefined;
@@ -43,14 +65,21 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 	pi.on("before_agent_start", (event, ctx) => {
 		let config;
 		try {
-			config = loadExtensionConfig(ctx);
+			config = getBaseConfig(ctx);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			ctx.ui.notify(`Could not load pi-subagent configuration: ${message}`, "warning");
 			config = { modelClasses: {} };
 		}
 		const rootModel = mainModel ?? (ctx.model ? { model: ctx.model, thinkingLevel: ctx.thinkingLevel } : undefined);
-		const names = getAvailableModelClassNames(config, ctx, rootModel);
+		const { names, diagnostics } = getModelClassAvailability(config, ctx, rootModel);
+		if (ctx.hasUI) {
+			for (const diagnostic of diagnostics) {
+				if (notifiedConfigurationWarnings.has(diagnostic)) continue;
+				notifiedConfigurationWarnings.add(diagnostic);
+				ctx.ui.notify(`Could not resolve a configured model class: ${diagnostic}`, "warning");
+			}
+		}
 		return { systemPrompt: `${event.systemPrompt}\n\n${formatAvailableModelClasses(names, config)}` };
 	});
 	pi.registerTool({
@@ -91,7 +120,7 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 			const rootModel = mainModel ?? (ctx.model ? { model: ctx.model, thinkingLevel: ctx.thinkingLevel } : undefined);
 			let resolvedModel: ModelSettings;
 			try {
-				resolvedModel = resolveModelClass(params.modelClass, loadExtensionConfig(ctx), ctx, rootModel);
+				resolvedModel = resolveModelClass(params.modelClass, getBaseConfig(ctx), ctx, rootModel);
 			} catch (error) {
 				return createDelegateToolResult(resultError("failed", error instanceof Error ? error.message : String(error)));
 			}
