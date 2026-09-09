@@ -24,7 +24,7 @@ const extensionSourcePath = fileURLToPath(import.meta.url);
 
 const DelegateCmdParams = Type.Object({
 	title: Type.String({ minLength: 1, description: "Short task description; prefer imperative form" }),
-	task: Type.String({ minLength: 1, description: "The task to delegate" }),
+	input: Type.String({ minLength: 1, description: "The task to delegate or a response in a dialog" }),
 	skills: Type.Optional(Type.Array(Type.String({}), { description: "Skills to pre-load into a new child session" })),
 	modelClass: Type.Optional(Type.String({ description: "Model class for a new child session; defaults to `parent`" })),
 	continue_session: Type.Optional(Type.String({ description: "The ID of an existing child session to continue; omit or leave empty to start a new child session" })),
@@ -88,7 +88,7 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 		description: "Delegate a task to a subagent in a new or existing child session",
 		promptSnippet: "Delegate a task to a subagent in a new or existing child session",
 		promptGuidelines: [
-			"Specify `title` and `task` always",
+			"Specify `title` and `input` always",
 			"Optionally, specify `modelClass` and `skills` when starting a new child session",
 			"When a task can benefit from the pre-populated context in an existing child session, use `continue_session` with the child session ID returned by a previous delegation request; omit it or leave it empty when starting a new child session.",
 		],
@@ -105,14 +105,14 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 		},
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			if (!params.title.trim()) return createDelegateToolResult(resultError("failed", "`title` must be a non-empty string."));
-			if (!params.task.trim()) return createDelegateToolResult(resultError("failed", "`task` must be a non-empty string."));
+			if (!params.input.trim()) return createDelegateToolResult(resultError("failed", "`input` must be a non-empty string."));
 			const abortSignal = signal ?? new AbortController().signal;
 			const continuationId = params.continue_session?.trim();
 			if (continuationId) {
 				if (params.modelClass !== undefined || params.skills !== undefined) return createDelegateToolResult(resultError("failed", "Do not specify `modelClass` or `skills` when continuing an existing child session."));
 				const child = registry.get(continuationId);
 				if (!child || child.cwd !== ctx.cwd) return createDelegateToolResult(resultError("failed", "Session ID is unknown, expired, or cwd-mismatched. Use a valid child session ID returned by a previous delegation request, or omit `continue_session` (or leave it empty) to start a new child session."));
-				const result = await child.queue.enqueue({ task: params.task, signal: abortSignal, onUpdate, theme: ctx.ui.theme });
+				const result = await child.queue.enqueue({ input: params.input, signal: abortSignal, onUpdate, theme: ctx.ui.theme });
 				if (result.status === "completed") result.sessionId = continuationId;
 				return createDelegateToolResult(result);
 			}
@@ -146,12 +146,12 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 					createdSession = session;
 					if (registry.isClosed()) { session.dispose(); createdSession = undefined; throw new Error("The extension runtime is shutting down."); }
 					child = { session, cwd: ctx.cwd, nestedRegistry, queue: undefined as never };
-					child.queue = new ContinuationQueue(session, (request) => runChildRequest(child!, request.task, request.signal, request.onUpdate, request.theme, ctx.cwd));
+					child.queue = new ContinuationQueue(session, (request) => runChildRequest(child!, request.input, request.signal, request.onUpdate, request.theme, ctx.cwd));
 					registry.add(child);
 				})();
 				await registry.trackSetup(setup);
 				if (!child) throw new Error("Child session setup did not produce a session.");
-				const result = await child.queue.startInitial({ task: params.task, signal: abortSignal, onUpdate, theme: ctx.ui.theme });
+				const result = await child.queue.startInitial({ input: params.input, signal: abortSignal, onUpdate, theme: ctx.ui.theme });
 				if (result.status !== "completed") { registry.remove(child.session.sessionId, child); await disposeChild(child); return createDelegateToolResult(result); }
 				result.sessionId = child.session.sessionId;
 				return createDelegateToolResult(result);

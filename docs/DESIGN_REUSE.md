@@ -6,7 +6,7 @@
 
 An opening delegation omits `continue_session` or specifies it as an empty string. It may specify `modelClass` and `skills`; `modelClass` defaults to `parent`.
 
-A continuation delegation specifies `continue_session` with a previously returned session ID. It must not specify `modelClass` or `skills`: the child’s existing configuration is reused. The task is appended as a new user turn. An unknown, expired, or cwd-mismatched ID fails the tool call.
+A continuation delegation specifies `continue_session` with a previously returned session ID. It must not specify `modelClass` or `skills`: the child’s existing configuration is reused. The `input` is appended as a new user turn. An unknown, expired, or cwd-mismatched ID fails the tool call.
 
 ## Session lifetime
 

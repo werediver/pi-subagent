@@ -13,13 +13,13 @@ The invocation contract is:
 ```ts
 type SubagentRequest = {
   title: string;
-  task: string;
+  input: string;
   skills?: string[];
   modelClass?: string;
 };
 ```
 
-The main agent must include relevant context in `task`; the subagent does not share the main agent's conversation context. `skills` supplies the capabilities needed for the task, and `modelClass` expresses model intent without requiring the caller to know concrete provider or model names.
+The main agent must include relevant context in `input`; the subagent does not share the main agent's conversation context. `skills` supplies the capabilities needed for the task, and `modelClass` expresses model intent without requiring the caller to know concrete provider or model names.
 
 The initial result contract is:
 
@@ -33,7 +33,7 @@ type SubagentResult = {
 
 Results are returned as labeled tool output. They must not be silently inserted into the main agent's context as an unlabeled user message.
 
-Independent invocations may run concurrently. Dependent work is staged: the main agent passes an earlier result into the task of a later subagent. Subagents may invoke the extension themselves, so delegation can be nested.
+Independent invocations may run concurrently. Dependent work is staged: the main agent passes an earlier result into the input of a later subagent invocation. Subagents may invoke the extension themselves, so delegation can be nested.
 
 ## Model classes
 

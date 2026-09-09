@@ -31,7 +31,7 @@ function getToolProgressText(result: unknown): string {
 	return sanitizeDisplayText(result.content.filter((part: any) => part?.type === "text" && typeof part.text === "string").map((part: any) => part.text).join("\n\n"));
 }
 
-export async function runChildRequest(child: ChildSession, task: string, signal: AbortSignal, onUpdate: AgentToolUpdateCallback | undefined, theme: Theme | undefined, cwd: string): Promise<DelegateCmdResult> {
+export async function runChildRequest(child: ChildSession, input: string, signal: AbortSignal, onUpdate: AgentToolUpdateCallback | undefined, theme: Theme | undefined, cwd: string): Promise<DelegateCmdResult> {
 	let aborting = false, turns = 0, lastProgressText: string | undefined;
 	const activeTools = new Map<string, ActiveTool>();
 	let currentToolCallId: string | undefined;
@@ -88,7 +88,7 @@ export async function runChildRequest(child: ChildSession, task: string, signal:
 	const abort = () => { aborting = true; abortCleanup ??= child.session.abort().catch(() => { }); };
 	if (signal.aborted) abort(); else signal.addEventListener("abort", abort, { once: true });
 	try {
-		await child.session.prompt(task);
+		await child.session.prompt(input);
 		return getDelegateOutcome(child.session.messages.slice(startIndex), aborting || signal.aborted);
 	} catch (error) {
 		return resultError(aborting || signal.aborted ? "cancelled" : "failed", error instanceof Error ? error.message : String(error));

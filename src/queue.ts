@@ -3,7 +3,7 @@ import type { DelegateCmdResult } from "./result.ts";
 import { resultError } from "./result.ts";
 
 export type QueuedRequest = {
-	task: string;
+	input: string;
 	signal: AbortSignal;
 	onUpdate?: AgentToolUpdateCallback;
 	theme?: Theme;
