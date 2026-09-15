@@ -55,8 +55,8 @@ Other classes can specify a concrete model, provider, and thinking level, or der
     "main": {
       "description": "Use the top-level main agent's model"
     },
-    "fast": {
-      "model": "fast-model",
+    "lightweight": {
+      "model": "lightweight-model",
       "thinkingLevel": "low",
       "description": "Optimized for latency and cost"
     },
@@ -65,13 +65,15 @@ Other classes can specify a concrete model, provider, and thinking level, or der
       "provider": "provider",
       "description": "A meaningfully different perspective"
     },
-    "alternative-fast": {
+    "alternative-lightweight": {
       "base": "alternative",
       "thinkingLevel": "low",
-      "description": "A fast independent review"
+      "description": "A lightweight independent review"
     }
   }
 }
 ```
 
 The descriptions of the built-in `parent` and `main` classes may be overridden for local presentation, but their resolution semantics remain fixed. Model-class configuration is owned by the implementation, allowing deployments to change mappings without changing callers, skills, or the invocation contract.
+
+Configuration may also define an optional top-level `subagentPreamble` string. When the extension is registered in a child session for nested delegation, this text is appended to the end of that child session's system prompt.

@@ -12,7 +12,7 @@ export type ModelClassDefinition =
 	| { base: string; thinkingLevel?: ModelThinkingLevel; description?: string }
 	| { description: string };
 
-export type ExtensionConfig = { modelClasses: Record<string, ModelClassDefinition> };
+export type ExtensionConfig = { modelClasses: Record<string, ModelClassDefinition>; subagentPreamble?: string };
 
 function readJsonFile(path: string): unknown {
 	try { return JSON.parse(readFileSync(path, "utf-8")); }
@@ -27,7 +27,9 @@ export function parseExtensionConfig(value: unknown, path: string): ExtensionCon
 	const isThinkingLevel = (item: unknown): item is ModelThinkingLevel => ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(item as string);
 	if (value === undefined) return { modelClasses: {} };
 	if (!isRecord(value)) throw new Error(`Extension configuration at ${path} must be a JSON object.`);
-	if (value.modelClasses === undefined) return { modelClasses: {} };
+	const subagentPreamble = value.subagentPreamble;
+	if (subagentPreamble !== undefined && typeof subagentPreamble !== "string") throw new Error(`The subagentPreamble property in ${path} must be a string.`);
+	if (value.modelClasses === undefined) return { modelClasses: {}, ...(subagentPreamble === undefined ? {} : { subagentPreamble }) };
 	if (!isRecord(value.modelClasses)) throw new Error(`The modelClasses property in ${path} must be a JSON object.`);
 	const modelClasses: Record<string, ModelClassDefinition> = {};
 	for (const [name, raw] of Object.entries(value.modelClasses)) {
@@ -58,7 +60,7 @@ export function parseExtensionConfig(value: unknown, path: string): ExtensionCon
 			? { base, ...(thinkingLevel === undefined ? {} : { thinkingLevel }), ...(description === undefined ? {} : { description }) }
 			: { model: model!, ...(provider === undefined ? {} : { provider }), ...(thinkingLevel === undefined ? {} : { thinkingLevel }), ...(description === undefined ? {} : { description }) };
 	}
-	return { modelClasses };
+	return { modelClasses, ...(subagentPreamble === undefined ? {} : { subagentPreamble }) };
 }
 
 export function loadExtensionConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): ExtensionConfig {
@@ -66,5 +68,9 @@ export function loadExtensionConfig(ctx: Pick<ExtensionContext, "cwd" | "isProje
 	const projectPath = join(ctx.cwd, CONFIG_DIR_NAME, "subagent.json");
 	const globalConfig = parseExtensionConfig(readJsonFile(globalPath), globalPath);
 	const projectConfig = parseExtensionConfig(ctx.isProjectTrusted() ? readJsonFile(projectPath) : undefined, projectPath);
-	return { modelClasses: { ...globalConfig.modelClasses, ...projectConfig.modelClasses } };
+	const subagentPreamble = projectConfig.subagentPreamble ?? globalConfig.subagentPreamble;
+	return {
+		modelClasses: { ...globalConfig.modelClasses, ...projectConfig.modelClasses },
+		...(subagentPreamble === undefined ? {} : { subagentPreamble }),
+	};
 }

@@ -32,10 +32,10 @@ const DelegateCmdParams = Type.Object({
 export type DelegateCmdParams = Static<typeof DelegateCmdParams>;
 
 function createExtensionFactory(mainModel: ModelSettings | undefined, registry: ChildRegistry, sourcePath: string): (pi: ExtensionAPI) => void {
-	return (pi) => registerExtension(pi, mainModel, registry, sourcePath);
+	return (pi) => registerExtension(pi, mainModel, registry, sourcePath, true);
 }
 
-function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefined, registry = new ChildRegistry(), sourcePath = extensionSourcePath): void {
+function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefined, registry = new ChildRegistry(), sourcePath = extensionSourcePath, isChildSession = false): void {
 	const notifiedConfigurationWarnings = new Set<string>();
 	let baseConfigCache: {
 		cwd: string;
@@ -80,7 +80,9 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 				ctx.ui.notify(`Could not resolve a configured model class: ${diagnostic}`, "warning");
 			}
 		}
-		return { systemPrompt: `${event.systemPrompt}\n\n${formatAvailableModelClasses(names, config)}` };
+		const promptSections = [formatAvailableModelClasses(names, config)];
+		if (isChildSession && config.subagentPreamble) promptSections.push(config.subagentPreamble);
+		return { systemPrompt: `${event.systemPrompt}\n\n${promptSections.join("\n\n")}` };
 	});
 	pi.registerTool({
 		name: "delegate",
