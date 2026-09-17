@@ -16,6 +16,7 @@ import { getAgentPresetAvailability, formatAvailableAgentPresets, resolveAgentPr
 import { ContinuationQueue } from "./queue.ts";
 import { ChildRegistry, type ChildSession, disposeChild } from "./registry.ts";
 import { runChildRequest } from "./runner.ts";
+import { evaluateToolAccess, resolveToolAccessRules, type ToolAccessRule } from "./tool-access.ts";
 import { formatPreloadedSkills, resolvePreloadedSkills } from "./skills.ts";
 import { createDelegateToolResult, resultError, type DelegateCmdResult } from "./result.ts";
 import { oneLine } from "./text.ts";
@@ -127,8 +128,11 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 
 			const rootModel = mainModel ?? (ctx.model ? { model: ctx.model, thinkingLevel: ctx.thinkingLevel } : undefined);
 			let resolvedModel: ModelSettings;
+			let toolRules: ToolAccessRule[];
 			try {
-				resolvedModel = resolveAgentPreset(params.agentPreset, getBaseConfig(ctx), ctx, rootModel);
+				const config = getBaseConfig(ctx);
+				resolvedModel = resolveAgentPreset(params.agentPreset, config, ctx, rootModel);
+				toolRules = resolveToolAccessRules(params.agentPreset, config);
 			} catch (error) {
 				return createDelegateToolResult(resultError("failed", error instanceof Error ? error.message : String(error)));
 			}
@@ -151,6 +155,7 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 					await resourceLoader.reload();
 					if (registry.isClosed()) throw new Error("The extension runtime is shutting down.");
 					const { session } = await createAgentSession({ cwd: ctx.cwd, model: resolvedModel.model, thinkingLevel: resolvedModel.thinkingLevel, resourceLoader, sessionManager: SessionManager.inMemory(ctx.cwd) });
+					if (toolRules.length > 0) session.setActiveToolsByName(evaluateToolAccess(toolRules, session.getAllTools().map((tool) => tool.name)));
 					createdSession = session;
 					if (registry.isClosed()) { session.dispose(); createdSession = undefined; throw new Error("The extension runtime is shutting down."); }
 					child = { session, cwd: ctx.cwd, nestedRegistry, queue: undefined as never };

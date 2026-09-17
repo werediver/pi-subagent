@@ -63,7 +63,8 @@ Other agent presets can specify a concrete model, provider, and thinking level, 
     "alternative": {
       "model": "independent-review-model",
       "provider": "provider",
-      "description": "A meaningfully different perspective"
+      "description": "A meaningfully different perspective",
+      "tools": { "*": false, "read": true, "exa_*": true }
     },
     "alternative-lightweight": {
       "base": "alternative",
@@ -75,5 +76,9 @@ Other agent presets can specify a concrete model, provider, and thinking level, 
 ```
 
 The descriptions of the built-in `parent` and `main` agent presets may be overridden for local presentation, but their resolution semantics remain fixed. Agent-preset configuration is owned by the implementation, allowing deployments to change mappings without changing callers, skills, or the invocation contract.
+
+An agent preset may also declare a `tools` mapping from glob patterns to booleans. Patterns only support `*`, which matches any run of characters including none, and are matched against the whole tool name case-sensitively. Every tool starts enabled; matching rules are applied in declaration order, so the last matching rule wins, and a tool matched by no rule stays enabled. Omitted `tools` means no restriction. The built-in `parent` and `main` presets do not accept `tools` because the extension must not restrict the session it registers into.
+
+A preset that derives from a `base` inherits the base's tool rules first, so the derived preset's own rules layer on top under last-match-wins evaluation. Tool access is resolved when an opening delegation creates the child session and is fixed for that session's lifetime; continuations reuse the child's existing tool set.
 
 Configuration may also define an optional top-level `subagentPreamble` string. When the extension is registered in a child session for nested delegation, this text is appended to the end of that child session's system prompt.
