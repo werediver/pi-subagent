@@ -7,12 +7,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 
-export type ModelClassDefinition =
+export type AgentPreset =
 	| { model: string; provider?: string; thinkingLevel?: ModelThinkingLevel; description?: string }
 	| { base: string; thinkingLevel?: ModelThinkingLevel; description?: string }
 	| { description: string };
 
-export type ExtensionConfig = { modelClasses: Record<string, ModelClassDefinition>; subagentPreamble?: string };
+export type ExtensionConfig = { agentPresets: Record<string, AgentPreset>; subagentPreamble?: string };
 
 function readJsonFile(path: string): unknown {
 	try { return JSON.parse(readFileSync(path, "utf-8")); }
@@ -25,22 +25,22 @@ function readJsonFile(path: string): unknown {
 export function parseExtensionConfig(value: unknown, path: string): ExtensionConfig {
 	const isRecord = (item: unknown): item is Record<string, unknown> => item !== null && typeof item === "object" && !Array.isArray(item);
 	const isThinkingLevel = (item: unknown): item is ModelThinkingLevel => ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(item as string);
-	if (value === undefined) return { modelClasses: {} };
+	if (value === undefined) return { agentPresets: {} };
 	if (!isRecord(value)) throw new Error(`Extension configuration at ${path} must be a JSON object.`);
 	const subagentPreamble = value.subagentPreamble;
 	if (subagentPreamble !== undefined && typeof subagentPreamble !== "string") throw new Error(`The subagentPreamble property in ${path} must be a string.`);
-	if (value.modelClasses === undefined) return { modelClasses: {}, ...(subagentPreamble === undefined ? {} : { subagentPreamble }) };
-	if (!isRecord(value.modelClasses)) throw new Error(`The modelClasses property in ${path} must be a JSON object.`);
-	const modelClasses: Record<string, ModelClassDefinition> = {};
-	for (const [name, raw] of Object.entries(value.modelClasses)) {
-		if (!isRecord(raw)) throw new Error(`Model class ${JSON.stringify(name)} in ${path} must be an object.`);
+	if (value.agentPresets === undefined) return { agentPresets: {}, ...(subagentPreamble === undefined ? {} : { subagentPreamble }) };
+	if (!isRecord(value.agentPresets)) throw new Error(`The agentPresets property in ${path} must be a JSON object.`);
+	const agentPresets: Record<string, AgentPreset> = {};
+	for (const [name, raw] of Object.entries(value.agentPresets)) {
+		if (!isRecord(raw)) throw new Error(`Agent preset ${JSON.stringify(name)} in ${path} must be an object.`);
 		const allowedKeys = new Set(["model", "provider", "base", "thinkingLevel", "description"]);
-		for (const key of Object.keys(raw)) if (!allowedKeys.has(key)) throw new Error(`Model class ${JSON.stringify(name)} in ${path} has an unknown property ${JSON.stringify(key)}.`);
+		for (const key of Object.keys(raw)) if (!allowedKeys.has(key)) throw new Error(`Agent preset ${JSON.stringify(name)} in ${path} has an unknown property ${JSON.stringify(key)}.`);
 		const stringValue = (key: string): string | undefined => {
 			if (!(key in raw)) return undefined;
-			if (typeof raw[key] !== "string") throw new Error(`Model class ${JSON.stringify(name)} in ${path} has an invalid ${key}.`);
+			if (typeof raw[key] !== "string") throw new Error(`Agent preset ${JSON.stringify(name)} in ${path} has an invalid ${key}.`);
 			const value = (raw[key] as string).trim();
-			if (!value) throw new Error(`Model class ${JSON.stringify(name)} in ${path} has an invalid ${key}.`);
+			if (!value) throw new Error(`Agent preset ${JSON.stringify(name)} in ${path} has an invalid ${key}.`);
 			return value;
 		};
 		const base = stringValue("base");
@@ -48,19 +48,19 @@ export function parseExtensionConfig(value: unknown, path: string): ExtensionCon
 		const provider = stringValue("provider");
 		const description = stringValue("description");
 		const thinkingLevel = raw.thinkingLevel === undefined ? undefined : raw.thinkingLevel;
-		if (thinkingLevel !== undefined && !isThinkingLevel(thinkingLevel)) throw new Error(`Model class ${JSON.stringify(name)} in ${path} has an invalid thinkingLevel.`);
+		if (thinkingLevel !== undefined && !isThinkingLevel(thinkingLevel)) throw new Error(`Agent preset ${JSON.stringify(name)} in ${path} has an invalid thinkingLevel.`);
 		if (name === "parent" || name === "main") {
-			if (model || base || provider || thinkingLevel || !description) throw new Error(`Built-in model class ${JSON.stringify(name)} in ${path} may only specify a description.`);
-			modelClasses[name] = { description };
+			if (model || base || provider || thinkingLevel || !description) throw new Error(`Built-in agent preset ${JSON.stringify(name)} in ${path} may only specify a description.`);
+			agentPresets[name] = { description };
 			continue;
 		}
-		if ((model !== undefined) === (base !== undefined)) throw new Error(`Model class ${JSON.stringify(name)} in ${path} must define exactly one of model or base.`);
-		if (base !== undefined && provider !== undefined) throw new Error(`Model class ${JSON.stringify(name)} in ${path} cannot specify a provider when using a base class.`);
-		modelClasses[name] = base !== undefined
+		if ((model !== undefined) === (base !== undefined)) throw new Error(`Agent preset ${JSON.stringify(name)} in ${path} must define exactly one of model or base.`);
+		if (base !== undefined && provider !== undefined) throw new Error(`Agent preset ${JSON.stringify(name)} in ${path} cannot specify a provider when using a base preset.`);
+		agentPresets[name] = base !== undefined
 			? { base, ...(thinkingLevel === undefined ? {} : { thinkingLevel }), ...(description === undefined ? {} : { description }) }
 			: { model: model!, ...(provider === undefined ? {} : { provider }), ...(thinkingLevel === undefined ? {} : { thinkingLevel }), ...(description === undefined ? {} : { description }) };
 	}
-	return { modelClasses, ...(subagentPreamble === undefined ? {} : { subagentPreamble }) };
+	return { agentPresets, ...(subagentPreamble === undefined ? {} : { subagentPreamble }) };
 }
 
 export function loadExtensionConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): ExtensionConfig {
@@ -70,7 +70,7 @@ export function loadExtensionConfig(ctx: Pick<ExtensionContext, "cwd" | "isProje
 	const projectConfig = parseExtensionConfig(ctx.isProjectTrusted() ? readJsonFile(projectPath) : undefined, projectPath);
 	const subagentPreamble = projectConfig.subagentPreamble ?? globalConfig.subagentPreamble;
 	return {
-		modelClasses: { ...globalConfig.modelClasses, ...projectConfig.modelClasses },
+		agentPresets: { ...globalConfig.agentPresets, ...projectConfig.agentPresets },
 		...(subagentPreamble === undefined ? {} : { subagentPreamble }),
 	};
 }

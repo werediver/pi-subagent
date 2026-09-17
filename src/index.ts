@@ -12,7 +12,7 @@ import {
 import { Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import { loadExtensionConfig, type ExtensionConfig } from "./config.ts";
-import { getModelClassAvailability, formatAvailableModelClasses, resolveModelClass, type ModelSettings } from "./model-resolver.ts";
+import { getAgentPresetAvailability, formatAvailableAgentPresets, resolveAgentPreset, type ModelSettings } from "./model-resolver.ts";
 import { ContinuationQueue } from "./queue.ts";
 import { ChildRegistry, type ChildSession, disposeChild } from "./registry.ts";
 import { runChildRequest } from "./runner.ts";
@@ -26,7 +26,7 @@ const DelegateCmdParams = Type.Object({
 	title: Type.String({ minLength: 1, description: "Short task description; prefer imperative form" }),
 	input: Type.String({ minLength: 1, description: "The task to delegate or a response in a dialog" }),
 	skills: Type.Optional(Type.Array(Type.String({}), { description: "Skills to pre-load into a new child session" })),
-	modelClass: Type.Optional(Type.String({ description: "Model class for a new child session; defaults to `parent`" })),
+	agentPreset: Type.Optional(Type.String({ description: "Agent preset for a new child session; defaults to `parent`" })),
 	continue_session: Type.Optional(Type.String({ description: "The ID of an existing child session to continue; omit or leave empty to start a new child session" })),
 });
 export type DelegateCmdParams = Static<typeof DelegateCmdParams>;
@@ -71,20 +71,20 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			ctx.ui.notify(`Could not load pi-subagent configuration: ${message}`, "warning");
-			config = { modelClasses: {} };
+			config = { agentPresets: {} };
 		}
 		const promptSections: string[] = [];
 		if (delegateToolActive) {
 			const rootModel = mainModel ?? (ctx.model ? { model: ctx.model, thinkingLevel: ctx.thinkingLevel } : undefined);
-			const { names, diagnostics } = getModelClassAvailability(config, ctx, rootModel);
+			const { names, diagnostics } = getAgentPresetAvailability(config, ctx, rootModel);
 			if (ctx.hasUI) {
 				for (const diagnostic of diagnostics) {
 					if (notifiedConfigurationWarnings.has(diagnostic)) continue;
 					notifiedConfigurationWarnings.add(diagnostic);
-					ctx.ui.notify(`Could not resolve a configured model class: ${diagnostic}`, "warning");
+					ctx.ui.notify(`Could not resolve a configured agent preset: ${diagnostic}`, "warning");
 				}
 			}
-			promptSections.push(formatAvailableModelClasses(names, config));
+			promptSections.push(formatAvailableAgentPresets(names, config));
 		}
 		if (isChildSession && config.subagentPreamble) promptSections.push(config.subagentPreamble);
 		if (promptSections.length === 0) return;
@@ -97,7 +97,7 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 		promptSnippet: "Delegate a task to a subagent in a new or existing child session",
 		promptGuidelines: [
 			"Specify `title` and `input` always",
-			"Optionally, specify `modelClass` and `skills` when starting a new child session",
+			"Optionally, specify `agentPreset` and `skills` when starting a new child session",
 			"When a task can benefit from the pre-populated context in an existing child session, use `continue_session` with the child session ID returned by a previous delegation request; omit it or leave it empty when starting a new child session.",
 		],
 		parameters: DelegateCmdParams,
@@ -107,7 +107,7 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 			const continuationId = args.continue_session?.trim();
 			const summary = continuationId
 				? `continue ${oneLine(continuationId)}${title}`
-				: `${oneLine(args.modelClass?.trim() || "parent")}${args.skills?.length ? ` + ${args.skills.map(oneLine).join(", ")}` : ""}${title}`;
+				: `${oneLine(args.agentPreset?.trim() || "parent")}${args.skills?.length ? ` + ${args.skills.map(oneLine).join(", ")}` : ""}${title}`;
 			text.setText(`${theme.fg("toolTitle", theme.bold("delegate"))} ${theme.fg("muted", summary)}`);
 			return text;
 		},
@@ -117,7 +117,7 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 			const abortSignal = signal ?? new AbortController().signal;
 			const continuationId = params.continue_session?.trim();
 			if (continuationId) {
-				if (params.modelClass !== undefined || params.skills !== undefined) return createDelegateToolResult(resultError("failed", "Do not specify `modelClass` or `skills` when continuing an existing child session."));
+				if (params.agentPreset !== undefined || params.skills !== undefined) return createDelegateToolResult(resultError("failed", "Do not specify `agentPreset` or `skills` when continuing an existing child session."));
 				const child = registry.get(continuationId);
 				if (!child || child.cwd !== ctx.cwd) return createDelegateToolResult(resultError("failed", "Session ID is unknown, expired, or cwd-mismatched. Use a valid child session ID returned by a previous delegation request, or omit `continue_session` (or leave it empty) to start a new child session."));
 				const result = await child.queue.enqueue({ input: params.input, signal: abortSignal, onUpdate, theme: ctx.ui.theme });
@@ -128,7 +128,7 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 			const rootModel = mainModel ?? (ctx.model ? { model: ctx.model, thinkingLevel: ctx.thinkingLevel } : undefined);
 			let resolvedModel: ModelSettings;
 			try {
-				resolvedModel = resolveModelClass(params.modelClass, getBaseConfig(ctx), ctx, rootModel);
+				resolvedModel = resolveAgentPreset(params.agentPreset, getBaseConfig(ctx), ctx, rootModel);
 			} catch (error) {
 				return createDelegateToolResult(resultError("failed", error instanceof Error ? error.message : String(error)));
 			}

@@ -7,95 +7,95 @@ export type ModelSettings = { model: Model<any>; thinkingLevel?: ModelThinkingLe
 
 type ModelContext = Pick<ExtensionContext, "model" | "thinkingLevel" | "modelRegistry">;
 
-export class ModelClassConfigurationError extends Error {
+export class AgentPresetError extends Error {
 	constructor(message: string) {
 		super(message);
-		this.name = "ModelClassConfigurationError";
+		this.name = "AgentPresetError";
 	}
 }
 
-export class ModelNotFoundError extends ModelClassConfigurationError {
-	constructor(provider: string, model: string, modelClass: string) {
-		super(`Model ${provider}/${model} for model class ${JSON.stringify(modelClass)} was not found.`);
+export class ModelNotFoundError extends AgentPresetError {
+	constructor(provider: string, model: string, agentPreset: string) {
+		super(`Model ${provider}/${model} for agent preset ${JSON.stringify(agentPreset)} was not found.`);
 		this.name = "ModelNotFoundError";
 	}
 }
 
-export function resolveModelClass(
-	requestedClass: string | undefined,
+export function resolveAgentPreset(
+	requestedPreset: string | undefined,
 	config: ExtensionConfig,
 	ctx: ModelContext,
 	mainModel: ModelSettings | undefined,
 ): ModelSettings {
-	const name = requestedClass?.trim() || "parent";
+	const name = requestedPreset?.trim() || "parent";
 	const resolving = new Set<string>();
-	const resolve = (className: string): ModelSettings => {
-		if (resolving.has(className)) throw new ModelClassConfigurationError(`Circular model class reference involving ${JSON.stringify(className)}.`);
-		resolving.add(className);
+	const resolve = (presetName: string): ModelSettings => {
+		if (resolving.has(presetName)) throw new AgentPresetError(`Circular agent preset reference involving ${JSON.stringify(presetName)}.`);
+		resolving.add(presetName);
 		try {
-			if (className === "parent") {
+			if (presetName === "parent") {
 				if (!ctx.model) throw new Error("The parent session has no active model.");
 				return { model: ctx.model, thinkingLevel: ctx.thinkingLevel };
 			}
-			if (className === "main") {
+			if (presetName === "main") {
 				if (!mainModel) throw new Error("The main session has no active model.");
 				return mainModel;
 			}
-			const definition = config.modelClasses[className];
-			if (!definition) throw new ModelClassConfigurationError(`Unknown model class ${JSON.stringify(className)}. Configure it in subagent.json.`);
+			const definition = config.agentPresets[presetName];
+			if (!definition) throw new AgentPresetError(`Unknown agent preset ${JSON.stringify(presetName)}. Configure it in subagent.json.`);
 			if ("base" in definition) {
 				const base = resolve(definition.base);
 				const inheritedThinkingLevel = definition.base === "parent" || definition.base === "main" ? undefined : base.thinkingLevel;
 				return { model: base.model, thinkingLevel: definition.thinkingLevel ?? inheritedThinkingLevel };
 			}
-			if (!("model" in definition)) throw new ModelClassConfigurationError(`Model class ${JSON.stringify(className)} must define a model or a base class.`);
+			if (!("model" in definition)) throw new AgentPresetError(`Agent preset ${JSON.stringify(presetName)} must define a model or a base preset.`);
 			const provider = definition.provider ?? mainModel?.model.provider ?? ctx.model?.provider;
-			if (!provider) throw new Error(`Model class ${JSON.stringify(className)} needs a provider because the root session has no active model.`);
+			if (!provider) throw new Error(`Agent preset ${JSON.stringify(presetName)} needs a provider because the root session has no active model.`);
 			const model = ctx.modelRegistry.getAll().find((candidate) => candidate.id === definition.model && candidate.provider === provider);
-			if (!model) throw new ModelNotFoundError(provider, definition.model, className);
+			if (!model) throw new ModelNotFoundError(provider, definition.model, presetName);
 			return { model, thinkingLevel: definition.thinkingLevel };
 		} finally {
-			resolving.delete(className);
+			resolving.delete(presetName);
 		}
 	};
 	return resolve(name);
 }
 
-export function formatAvailableModelClasses(names: readonly string[], config: ExtensionConfig): string {
+export function formatAvailableAgentPresets(names: readonly string[], config: ExtensionConfig): string {
 	const descriptions = new Map([["parent", "The parent session model (default)"], ["main", "The main session model"]]);
 	return [
-		"The following model classes are available for the `delegate` tool. Set `modelClass` to one of these names.",
-		"<delegate_modelClass_options>",
+		"The following agent presets are available for the `delegate` tool. Set `agentPreset` to one of these names.",
+		"<delegate_agentPreset_options>",
 		names.map((name) => {
-			const description = config.modelClasses[name]?.description ?? descriptions.get(name);
+			const description = config.agentPresets[name]?.description ?? descriptions.get(name);
 			return description ? `- ${escapeXml(JSON.stringify(oneLine(name)))}: ${escapeXml(oneLine(description))}` : `- ${escapeXml(JSON.stringify(oneLine(name)))}`;
 		}).join("\n"),
-		"</delegate_modelClass_options>",
+		"</delegate_agentPreset_options>",
 	].join("\n");
 }
 
-export type ModelClassAvailability = {
+export type AgentPresetAvailability = {
 	names: string[];
 	diagnostics: string[];
 };
 
-export function getModelClassAvailability(
+export function getAgentPresetAvailability(
 	config: ExtensionConfig,
 	ctx: ModelContext,
 	mainModel: ModelSettings | undefined,
-): ModelClassAvailability {
+): AgentPresetAvailability {
 	const rootModel = mainModel ?? (ctx.model ? { model: ctx.model, thinkingLevel: ctx.thinkingLevel } : undefined);
 	const names = [...(ctx.model ? ["parent"] : []), ...(rootModel ? ["main"] : [])];
 	const diagnostics = new Set<string>();
-	for (const name of Object.keys(config.modelClasses).sort()) if (name !== "parent" && name !== "main") try {
-		resolveModelClass(name, config, ctx, rootModel);
+	for (const name of Object.keys(config.agentPresets).sort()) if (name !== "parent" && name !== "main") try {
+		resolveAgentPreset(name, config, ctx, rootModel);
 		names.push(name);
 	} catch (error) {
-		if (error instanceof ModelClassConfigurationError) diagnostics.add(error.message);
+		if (error instanceof AgentPresetError) diagnostics.add(error.message);
 	}
 	return { names, diagnostics: [...diagnostics] };
 }
 
-export function getAvailableModelClassNames(config: ExtensionConfig, ctx: ModelContext, mainModel: ModelSettings | undefined): string[] {
-	return getModelClassAvailability(config, ctx, mainModel).names;
+export function getAvailableAgentPresetNames(config: ExtensionConfig, ctx: ModelContext, mainModel: ModelSettings | undefined): string[] {
+	return getAgentPresetAvailability(config, ctx, mainModel).names;
 }
