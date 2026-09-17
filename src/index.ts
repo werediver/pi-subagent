@@ -63,6 +63,8 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 		if (details?.status !== "completed") return { isError: true };
 	});
 	pi.on("before_agent_start", (event, ctx) => {
+		const delegateToolActive = event.systemPromptOptions.selectedTools?.includes("delegate") ?? false;
+		if (!delegateToolActive && !isChildSession) return;
 		let config;
 		try {
 			config = getBaseConfig(ctx);
@@ -71,17 +73,21 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 			ctx.ui.notify(`Could not load pi-subagent configuration: ${message}`, "warning");
 			config = { modelClasses: {} };
 		}
-		const rootModel = mainModel ?? (ctx.model ? { model: ctx.model, thinkingLevel: ctx.thinkingLevel } : undefined);
-		const { names, diagnostics } = getModelClassAvailability(config, ctx, rootModel);
-		if (ctx.hasUI) {
-			for (const diagnostic of diagnostics) {
-				if (notifiedConfigurationWarnings.has(diagnostic)) continue;
-				notifiedConfigurationWarnings.add(diagnostic);
-				ctx.ui.notify(`Could not resolve a configured model class: ${diagnostic}`, "warning");
+		const promptSections: string[] = [];
+		if (delegateToolActive) {
+			const rootModel = mainModel ?? (ctx.model ? { model: ctx.model, thinkingLevel: ctx.thinkingLevel } : undefined);
+			const { names, diagnostics } = getModelClassAvailability(config, ctx, rootModel);
+			if (ctx.hasUI) {
+				for (const diagnostic of diagnostics) {
+					if (notifiedConfigurationWarnings.has(diagnostic)) continue;
+					notifiedConfigurationWarnings.add(diagnostic);
+					ctx.ui.notify(`Could not resolve a configured model class: ${diagnostic}`, "warning");
+				}
 			}
+			promptSections.push(formatAvailableModelClasses(names, config));
 		}
-		const promptSections = [formatAvailableModelClasses(names, config)];
 		if (isChildSession && config.subagentPreamble) promptSections.push(config.subagentPreamble);
+		if (promptSections.length === 0) return;
 		return { systemPrompt: `${event.systemPrompt}\n\n${promptSections.join("\n\n")}` };
 	});
 	pi.registerTool({
