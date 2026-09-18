@@ -14,6 +14,25 @@ export type AgentPreset =
 	| { base: string; thinkingLevel?: ModelThinkingLevel; description?: string; tools?: ToolAccessRules }
 	| { description: string };
 
+/**
+ * Parses a configuration value that may be provided either as a single string
+ * or as an array of strings, which are joined using a newline separator.
+ * Returns `undefined` when the value is absent.
+ */
+function parseText(value: unknown, label: string): string | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "string" && !Array.isArray(value)) throw new Error(`${label} must be a string or an array of strings.`);
+	const parts = typeof value === "string" ? [value] : value;
+	const lines: string[] = [];
+	for (const part of parts) {
+		if (typeof part !== "string") throw new Error(`${label} must be a string or an array of strings.`);
+		const line = part.trimEnd();
+		lines.push(line);
+	}
+	if (lines.length === 0) throw new Error(`${label} must not be empty.`);
+	return lines.join("\n");
+}
+
 function parseToolAccessRules(value: unknown, presetName: string, path: string): ToolAccessRules | undefined {
 	if (value === undefined) return undefined;
 	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`Agent preset ${JSON.stringify(presetName)} in ${path} has an invalid tools; expected an object mapping tool patterns to booleans.`);
@@ -41,8 +60,7 @@ export function parseExtensionConfig(value: unknown, path: string): ExtensionCon
 	const isThinkingLevel = (item: unknown): item is ModelThinkingLevel => ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(item as string);
 	if (value === undefined) return { agentPresets: {} };
 	if (!isRecord(value)) throw new Error(`Extension configuration at ${path} must be a JSON object.`);
-	const subagentPreamble = value.subagentPreamble;
-	if (subagentPreamble !== undefined && typeof subagentPreamble !== "string") throw new Error(`The subagentPreamble property in ${path} must be a string.`);
+	const subagentPreamble = parseText(value.subagentPreamble, `The subagentPreamble property in ${path}`);
 	if (value.agentPresets === undefined) return { agentPresets: {}, ...(subagentPreamble === undefined ? {} : { subagentPreamble }) };
 	if (!isRecord(value.agentPresets)) throw new Error(`The agentPresets property in ${path} must be a JSON object.`);
 	const agentPresets: Record<string, AgentPreset> = {};
@@ -60,7 +78,7 @@ export function parseExtensionConfig(value: unknown, path: string): ExtensionCon
 		const base = stringValue("base");
 		const model = stringValue("model");
 		const provider = stringValue("provider");
-		const description = stringValue("description");
+		const description = parseText(raw.description, `The description property of agent preset ${JSON.stringify(name)} in ${path}`);
 		const thinkingLevel = raw.thinkingLevel === undefined ? undefined : raw.thinkingLevel;
 		if (thinkingLevel !== undefined && !isThinkingLevel(thinkingLevel)) throw new Error(`Agent preset ${JSON.stringify(name)} in ${path} has an invalid thinkingLevel.`);
 		const tools = parseToolAccessRules(raw.tools, name, path);
