@@ -32,11 +32,11 @@ const DelegateCmdParams = Type.Object({
 });
 export type DelegateCmdParams = Static<typeof DelegateCmdParams>;
 
-function createExtensionFactory(mainModel: ModelSettings | undefined, registry: ChildRegistry, sourcePath: string): (pi: ExtensionAPI) => void {
-	return (pi) => registerExtension(pi, mainModel, registry, sourcePath, true);
+function createExtensionFactory(mainModel: ModelSettings | undefined, registry: ChildRegistry, sourcePath: string, callerSubordinationLevel: number): (pi: ExtensionAPI) => void {
+	return (pi) => registerExtension(pi, mainModel, registry, sourcePath, callerSubordinationLevel + 1);
 }
 
-function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefined, registry = new ChildRegistry(), sourcePath = extensionSourcePath, isChildSession = false): void {
+function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefined, registry = new ChildRegistry(), sourcePath = extensionSourcePath, subordinationLevel = 0): void {
 	const notifiedConfigurationWarnings = new Set<string>();
 	let baseConfigCache: {
 		cwd: string;
@@ -65,7 +65,7 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 	});
 	pi.on("before_agent_start", (event, ctx) => {
 		const delegateToolActive = event.systemPromptOptions.selectedTools?.includes("delegate") ?? false;
-		if (!delegateToolActive && !isChildSession) return;
+		if (!delegateToolActive && subordinationLevel === 0) return;
 		let config;
 		try {
 			config = getBaseConfig(ctx);
@@ -87,7 +87,7 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 			}
 			promptSections.push(formatAvailableAgentPresets(names, config));
 		}
-		if (isChildSession && config.subagentPreamble) promptSections.push(config.subagentPreamble);
+		if (subordinationLevel > 0 && config.subagentPreamble) promptSections.push(config.subagentPreamble);
 		if (promptSections.length === 0) return;
 		return { systemPrompt: `${event.systemPrompt}\n\n${promptSections.join("\n\n")}` };
 	});
@@ -146,7 +146,7 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 						cwd: ctx.cwd,
 						agentDir: getAgentDir(),
 						extensionsOverride: (current) => ({ ...current, extensions: current.extensions.filter((extension) => extension.path !== sourcePath && extension.resolvedPath !== sourcePath) }),
-						extensionFactories: [{ name: "pi-subagent", factory: createExtensionFactory(rootModel, nestedRegistry, sourcePath), hidden: true }],
+						extensionFactories: [{ name: "pi-subagent", factory: createExtensionFactory(rootModel, nestedRegistry, sourcePath, subordinationLevel), hidden: true }],
 						noPromptTemplates: true,
 						noThemes: true,
 						skillsOverride: (current) => { preloadedSkills = resolvePreloadedSkills(current.skills, params.skills); return current; },
