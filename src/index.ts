@@ -60,7 +60,8 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 	};
 	pi.on("session_shutdown", async () => { await registry.close(); });
 	pi.on("tool_result", (event) => {
-		const details = event.toolName === "delegate" ? event.details as DelegateCmdResult | undefined : undefined;
+		if (event.toolName !== "delegate") return;
+		const details = event.details as DelegateCmdResult | undefined;
 		if (details?.status !== "completed") return { isError: true };
 	});
 	pi.on("before_agent_start", (event, ctx) => {
