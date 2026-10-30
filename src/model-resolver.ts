@@ -26,6 +26,7 @@ export function resolveAgentPreset(
 	config: ExtensionConfig,
 	ctx: ModelContext,
 	mainModel: ModelSettings | undefined,
+	rootRegistry: ModelContext["modelRegistry"] = ctx.modelRegistry,
 ): ModelSettings {
 	const name = requestedPreset?.trim() || "parent";
 	const resolving = new Set<string>();
@@ -49,9 +50,9 @@ export function resolveAgentPreset(
 				return { model: base.model, thinkingLevel: definition.thinkingLevel ?? inheritedThinkingLevel };
 			}
 			if (!("model" in definition)) throw new AgentPresetError(`Agent preset ${JSON.stringify(presetName)} must define a model or a base preset.`);
-			const provider = definition.provider ?? mainModel?.model.provider ?? ctx.model?.provider;
+			const provider = definition.provider ?? mainModel?.model.provider;
 			if (!provider) throw new Error(`Agent preset ${JSON.stringify(presetName)} needs a provider because the root session has no active model.`);
-			const model = ctx.modelRegistry.getAll().find((candidate) => candidate.id === definition.model && candidate.provider === provider);
+			const model = rootRegistry.getAll().find((candidate) => candidate.id === definition.model && candidate.provider === provider);
 			if (!model) throw new ModelNotFoundError(provider, definition.model, presetName);
 			return { model, thinkingLevel: definition.thinkingLevel };
 		} finally {
@@ -83,12 +84,12 @@ export function getAgentPresetAvailability(
 	config: ExtensionConfig,
 	ctx: ModelContext,
 	mainModel: ModelSettings | undefined,
+	rootRegistry: ModelContext["modelRegistry"] = ctx.modelRegistry,
 ): AgentPresetAvailability {
-	const rootModel = mainModel ?? (ctx.model ? { model: ctx.model, thinkingLevel: ctx.thinkingLevel } : undefined);
-	const names = [...(ctx.model ? ["parent"] : []), ...(rootModel ? ["main"] : [])];
+	const names = [...(ctx.model ? ["parent"] : []), ...(mainModel ? ["main"] : [])];
 	const diagnostics = new Set<string>();
 	for (const name of Object.keys(config.agentPresets).sort()) if (name !== "parent" && name !== "main") try {
-		resolveAgentPreset(name, config, ctx, rootModel);
+		resolveAgentPreset(name, config, ctx, mainModel, rootRegistry);
 		names.push(name);
 	} catch (error) {
 		if (error instanceof AgentPresetError) diagnostics.add(error.message);

@@ -32,11 +32,15 @@ const DelegateCmdParams = Type.Object({
 });
 export type DelegateCmdParams = Static<typeof DelegateCmdParams>;
 
-function createExtensionFactory(mainModel: ModelSettings | undefined, registry: ChildRegistry, sourcePath: string, callerSubordinationLevel: number): (pi: ExtensionAPI) => void {
-	return (pi) => registerExtension(pi, mainModel, registry, sourcePath, callerSubordinationLevel + 1);
+// Pi contexts expose live model and thinking getters. Only the root runtime owns
+// this reference; descendants read it rather than capturing a model at creation.
+type RootSharedState = { context?: ExtensionContext; closed: boolean };
+
+function createExtensionFactory(root: RootSharedState, registry: ChildRegistry, sourcePath: string, callerSubordinationLevel: number): (pi: ExtensionAPI) => void {
+	return (pi) => registerExtension(pi, root, registry, sourcePath, callerSubordinationLevel + 1);
 }
 
-function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefined, registry = new ChildRegistry(), sourcePath = extensionSourcePath, subordinationLevel = 0): void {
+function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = new ChildRegistry(), sourcePath = extensionSourcePath, subordinationLevel = 0): void {
 	const notifiedConfigurationWarnings = new Set<string>();
 	let baseConfigCache: {
 		cwd: string;
@@ -58,13 +62,23 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 			throw error;
 		}
 	};
-	pi.on("session_shutdown", async () => { await registry.close(); });
+	if (subordinationLevel === 0) {
+		const updateRootContext = (_event: unknown, ctx: ExtensionContext) => { if (!root.closed) root.context = ctx; };
+		pi.on("session_start", updateRootContext);
+		pi.on("model_select", updateRootContext);
+		pi.on("thinking_level_select", updateRootContext);
+	}
+	pi.on("session_shutdown", async () => {
+		if (subordinationLevel === 0) { root.closed = true; root.context = undefined; }
+		await registry.close();
+	});
 	pi.on("tool_result", (event) => {
 		if (event.toolName !== "delegate") return;
 		const details = event.details as DelegateCmdResult | undefined;
 		if (details?.status !== "completed") return { isError: true };
 	});
 	pi.on("before_agent_start", (event, ctx) => {
+		if (subordinationLevel === 0 && !root.closed) root.context = ctx;
 		const delegateToolActive = event.systemPromptOptions.selectedTools?.includes("delegate") ?? false;
 		if (!delegateToolActive && subordinationLevel === 0) return;
 		let config;
@@ -76,9 +90,10 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 			config = { agentPresets: {} };
 		}
 		const promptSections: string[] = [];
-		if (delegateToolActive) {
-			const rootModel = mainModel ?? (ctx.model ? { model: ctx.model, thinkingLevel: ctx.thinkingLevel } : undefined);
-			const { names, diagnostics } = getAgentPresetAvailability(config, ctx, rootModel);
+		if (delegateToolActive && root.context && !root.closed) {
+			const rootContext = root.context;
+			const rootModel = rootContext.model ? { model: rootContext.model, thinkingLevel: rootContext.thinkingLevel } : undefined;
+			const { names, diagnostics } = getAgentPresetAvailability(config, ctx, rootModel, rootContext.modelRegistry);
 			if (ctx.hasUI) {
 				for (const diagnostic of diagnostics) {
 					if (notifiedConfigurationWarnings.has(diagnostic)) continue;
@@ -114,6 +129,8 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 			return text;
 		},
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			if (subordinationLevel === 0 && !root.closed) root.context = ctx;
+			if (root.closed || !root.context) return createDelegateToolResult(resultError("failed", "The root session is unavailable."));
 			if (!params.title.trim()) return createDelegateToolResult(resultError("failed", "`title` must be a non-empty string."));
 			if (!params.input.trim()) return createDelegateToolResult(resultError("failed", "`input` must be a non-empty string."));
 			const abortSignal = signal ?? new AbortController().signal;
@@ -127,12 +144,13 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 				return createDelegateToolResult(result);
 			}
 
-			const rootModel = mainModel ?? (ctx.model ? { model: ctx.model, thinkingLevel: ctx.thinkingLevel } : undefined);
+			const rootContext = root.context;
+			const rootModel = rootContext.model ? { model: rootContext.model, thinkingLevel: rootContext.thinkingLevel } : undefined;
 			let resolvedModel: ModelSettings;
 			let toolRules: ToolAccessRule[];
 			try {
 				const config = getBaseConfig(ctx);
-				resolvedModel = resolveAgentPreset(params.agentPreset, config, ctx, rootModel);
+				resolvedModel = resolveAgentPreset(params.agentPreset, config, ctx, rootModel, rootContext.modelRegistry);
 				toolRules = resolveToolAccessRules(params.agentPreset, config);
 			} catch (error) {
 				return createDelegateToolResult(resultError("failed", error instanceof Error ? error.message : String(error)));
@@ -147,7 +165,7 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 						cwd: ctx.cwd,
 						agentDir: getAgentDir(),
 						extensionsOverride: (current) => ({ ...current, extensions: current.extensions.filter((extension) => extension.path !== sourcePath && extension.resolvedPath !== sourcePath) }),
-						extensionFactories: [{ name: "pi-subagent", factory: createExtensionFactory(rootModel, nestedRegistry, sourcePath, subordinationLevel), hidden: true }],
+						extensionFactories: [{ name: "pi-subagent", factory: createExtensionFactory(root, nestedRegistry, sourcePath, subordinationLevel), hidden: true }],
 						noPromptTemplates: true,
 						noThemes: true,
 						skillsOverride: (current) => { preloadedSkills = resolvePreloadedSkills(current.skills, params.skills); return current; },
@@ -179,5 +197,5 @@ function registerExtension(pi: ExtensionAPI, mainModel: ModelSettings | undefine
 }
 
 export default function (pi: ExtensionAPI): void {
-	registerExtension(pi, undefined, undefined, extensionSourcePath);
+	registerExtension(pi, { closed: false }, undefined, extensionSourcePath);
 }

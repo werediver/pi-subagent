@@ -48,13 +48,21 @@ test("parent is the default for omitted, blank, and trimmed preset names; main u
 	assert.strictEqual(resolveAgentPreset(" main ", config(), ctx, mainSettings), mainSettings);
 });
 
-test("concrete models select explicit provider, then main provider, then parent provider", () => {
+test("concrete models select explicit provider or the root provider, never the caller provider", () => {
 	const presets = config({ explicit: { model: "shared", provider: "explicit-provider", thinkingLevel: "medium" }, implicit: { model: "shared" } });
 	const ctx = context(parent, allModels);
 	assert.deepEqual(resolveAgentPreset("explicit", presets, ctx, mainSettings), { model: explicitShared, thinkingLevel: "medium" });
 	assert.deepEqual(resolveAgentPreset("implicit", presets, ctx, mainSettings), { model: mainShared, thinkingLevel: undefined });
-	assert.deepEqual(resolveAgentPreset("implicit", presets, ctx, undefined), { model: parentShared, thinkingLevel: undefined });
+	assert.throws(() => resolveAgentPreset("implicit", presets, ctx, undefined), /root session has no active model/);
 	assert.deepEqual(resolveAgentPreset("explicit", presets, context(undefined, allModels), undefined), { model: explicitShared, thinkingLevel: "medium" });
+});
+
+test("model availability uses the root registry rather than the calling session registry", () => {
+	const presets = config({ implicit: { model: "shared" } });
+	const caller = context(parent, [parentShared]);
+	const rootRegistry = context(main, [mainShared]).modelRegistry;
+	assert.deepEqual(resolveAgentPreset("implicit", presets, caller, mainSettings, rootRegistry), { model: mainShared, thinkingLevel: undefined });
+	assert.throws(() => resolveAgentPreset("implicit", presets, caller, mainSettings, context(main, [parentShared]).modelRegistry), ModelNotFoundError);
 });
 
 test("base presets inherit models and custom thinking levels, but not built-in thinking levels", () => {
@@ -105,7 +113,7 @@ test("model resolution detects self and indirect cycles and unknown bases", () =
 	}
 });
 
-test("availability sorts resolvable custom presets, deduplicates preset diagnostics, and falls back to parent for main", () => {
+test("availability sorts resolvable custom presets and does not substitute parent for absent root", () => {
 	const presets = config({
 		z: { base: "main" }, a: { base: "parent" },
 		bad1: { base: "absent" }, bad2: { base: "absent" },
@@ -113,7 +121,7 @@ test("availability sorts resolvable custom presets, deduplicates preset diagnost
 		parent: { description: "custom description" },
 	});
 	assert.deepEqual(getAgentPresetAvailability(presets, context(parent), undefined), {
-		names: ["parent", "main", "a", "z"],
+		names: ["parent", "a"],
 		diagnostics: ['Unknown agent preset "absent". Configure it in subagent.json.', 'Model p/not-registered for agent preset "missing" was not found.'],
 	});
 	assert.deepEqual(getAgentPresetAvailability(config({ needsProvider: { model: "x" } }), context(undefined), undefined), { names: [], diagnostics: [] });

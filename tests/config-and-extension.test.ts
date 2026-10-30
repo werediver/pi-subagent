@@ -66,6 +66,25 @@ test("configuration merges project over user only when trusted", withSandbox((pr
 	assert.deepEqual(getConfig(false), { agentPresets: { shared: { model: "user" }, user: { base: "main" } }, subagentPreamble: "user" });
 }));
 
+test("root context follows lifecycle events, even with delegate inactive, and stops on shutdown", withSandbox(async (project, agentDir) => {
+	writeConfig(agentDir, { agentPresets: { dynamic: { model: "shared", description: "Dynamic choice" } } });
+	const first = fakeModel("first", "root");
+	const second = fakeModel("second", "root");
+	const target = fakeModel("second", "shared");
+	const { ctx } = fakeContext(project, [first, second, target]);
+	const harness = createExtensionHarness();
+	await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+	assert.doesNotMatch(harness.beforeStart(ctx, ["delegate"])!.systemPrompt!, /Dynamic choice/);
+	Object.assign(ctx, { model: second });
+	await harness.emit("model_select", { type: "model_select", model: second, previousModel: first, source: "set" }, ctx);
+	await harness.emit("thinking_level_select", { type: "thinking_level_select", level: "high", previousLevel: "low" }, ctx);
+	assert.equal(harness.beforeStart(ctx, []), undefined);
+	assert.match(harness.beforeStart(ctx, ["delegate"])!.systemPrompt!, /Dynamic choice/);
+	await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+	const result = await harness.execute(ctx, { title: "test", input: "test" });
+	assert.deepEqual(result.details, { status: "failed", error: "The root session is unavailable." });
+}));
+
 test("extension harness invokes prompt events and delegate guards", withSandbox(async (project, agentDir) => {
 	writeConfig(agentDir, { agentPresets: { fast: { model: "test-model", description: "Fast model" } } });
 	const harness = createExtensionHarness();
