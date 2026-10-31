@@ -88,7 +88,7 @@ export default function (pi) {
 	writeFileSync(join(agentDir, "extensions", "fake-provider.js"), source);
 }
 
-test("existing child and grandchild resolve main and providerless presets from the live root", async () => {
+test("nested sessions share the root config snapshot while models remain live, until reload", async () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "pi-nested-runtime-"));
 	const agentDir = join(rootDir, "agent");
 	const project = join(rootDir, "project");
@@ -106,6 +106,7 @@ test("existing child and grandchild resolve main and providerless presets from t
 	writeFakeProvider(agentDir, logPath);
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	const harness = createExtensionHarness();
+	let reloadedHarness: ReturnType<typeof createExtensionHarness> | undefined;
 	const { ctx } = fakeContext(project);
 	// Avoid UI rendering in the headless test.
 	Object.defineProperty(ctx.ui, "theme", { value: undefined });
@@ -151,6 +152,27 @@ test("existing child and grandchild resolve main and providerless presets from t
 		assert.ok(grandchildId);
 		assert.notEqual(grandchildId, initial.sessionId);
 
+		// The first beforeStart established the snapshot. Make the on-disk config
+		// observably different before creating any more descendants or continuing.
+		writeFileSync(join(agentDir, "subagent.json"), JSON.stringify({
+			subagentPreamble: "RELOADED-PREAMBLE-MARKER",
+			agentPresets: {
+				observer: { base: "parent", description: "Reloaded observer marker" },
+				dynamic: { model: "alternate-model", description: "Reloaded dynamic marker", thinkingLevel: "low" },
+			},
+		}));
+		const afterEdit = (await harness.execute(ctx, { title: "New after edit", input: "new after edit" })).details as DelegateCmdResult;
+		assert.equal(afterEdit.status, "completed", JSON.stringify(afterEdit));
+		assert.ok(afterEdit.sessionId);
+		const newChild = requests().find(r => r.users.at(-1) === "new after edit");
+		assert.ok(newChild);
+		assert.match(newChild.systemPrompt, /NESTED-PREAMBLE-MARKER/);
+		assert.match(newChild.systemPrompt, /Observer preset marker/);
+		assert.doesNotMatch(newChild.systemPrompt, /RELOADED-PREAMBLE-MARKER|Reloaded observer marker/);
+		const originalRootPrompt = harness.beforeStart(ctx, ["delegate"])?.systemPrompt;
+		assert.match(originalRootPrompt!, /Observer preset marker/);
+		assert.doesNotMatch(originalRootPrompt!, /Reloaded observer marker/);
+
 		// Mutate the very same root context after both nested sessions exist.
 		const alternate = registry.find("alternate-test", "alternate-model");
 		assert.ok(alternate);
@@ -171,6 +193,7 @@ test("existing child and grandchild resolve main and providerless presets from t
 			assert.match(runs[0].systemPrompt, /Dynamic preset marker/);
 			assert.match(runs[0].systemPrompt, /Observer preset marker/);
 			assert.match(runs[0].systemPrompt, /NESTED-PREAMBLE-MARKER/);
+			assert.doesNotMatch(runs[0].systemPrompt, /RELOADED-PREAMBLE-MARKER|Reloaded observer marker|Reloaded dynamic marker/);
 			const final = runs.at(-1);
 			assert.equal(final.turnResults.length, prompt === "child continuation" ? 4 : 3);
 			assert.ok(final.turnResults.every((result: { isError: boolean }) => !result.isError), JSON.stringify(final.turnResults));
@@ -188,6 +211,10 @@ test("existing child and grandchild resolve main and providerless presets from t
 				assert.equal(leaf[0].provider, provider);
 				assert.equal(leaf[0].model, modelId);
 				assert.equal(leaf[0].reasoning, reasoning);
+				assert.match(leaf[0].systemPrompt, /NESTED-PREAMBLE-MARKER/);
+				assert.match(leaf[0].systemPrompt, /Observer preset marker/);
+				assert.match(leaf[0].systemPrompt, /Dynamic preset marker/);
+				assert.doesNotMatch(leaf[0].systemPrompt, /RELOADED-PREAMBLE-MARKER|Reloaded observer marker|Reloaded dynamic marker/);
 			}
 		}
 
@@ -208,7 +235,37 @@ test("existing child and grandchild resolve main and providerless presets from t
 		assert.equal(byPrompt("must not run dynamic").length, 0);
 		assert.equal(byPrompt("must not run main").length, 0);
 		assert.equal(byPrompt("no root parent leaf")[0].provider, "nested-test");
+
+		// Shutdown invalidates the old tree; a fresh factory acts as reload and
+		// snapshots the replacement config rather than inheriting the old tree.
+		await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+		const closed = (await harness.execute(ctx, { title: "Closed", input: "closed", continue_session: initial.sessionId })).details as DelegateCmdResult;
+		assert.equal(closed.status, "failed");
+		assert.match(closed.error!, /root session is unavailable/i);
+		Object.assign(ctx, { model: alternate, thinkingLevel: "high" });
+		reloadedHarness = createExtensionHarness();
+		const reloadedPrompt = reloadedHarness.beforeStart(ctx, ["delegate"])?.systemPrompt;
+		assert.match(reloadedPrompt!, /Reloaded observer marker/);
+		assert.match(reloadedPrompt!, /Reloaded dynamic marker/);
+		assert.doesNotMatch(reloadedPrompt!, /Observer preset marker|Dynamic preset marker/);
+		const stale = (await reloadedHarness.execute(ctx, { title: "Old ID", input: "stale", continue_session: initial.sessionId })).details as DelegateCmdResult;
+		assert.equal(stale.status, "failed");
+		assert.match(stale.error!, /unknown, expired, or cwd-mismatched/);
+		const fresh = (await reloadedHarness.execute(ctx, { title: "Reloaded", input: "reload leaf", agentPreset: "dynamic" })).details as DelegateCmdResult;
+		assert.equal(fresh.status, "completed", JSON.stringify(fresh));
+		assert.ok(fresh.sessionId);
+		assert.notEqual(fresh.sessionId, initial.sessionId);
+		const reloadedLeaf = byPrompt("reload leaf");
+		assert.equal(reloadedLeaf.length, 1);
+		assert.equal(reloadedLeaf[0].provider, "alternate-test");
+		assert.equal(reloadedLeaf[0].model, "alternate-model");
+		assert.equal(reloadedLeaf[0].reasoning, "low");
+		assert.match(reloadedLeaf[0].systemPrompt, /RELOADED-PREAMBLE-MARKER/);
+		assert.match(reloadedLeaf[0].systemPrompt, /Reloaded observer marker/);
+		assert.match(reloadedLeaf[0].systemPrompt, /Reloaded dynamic marker/);
+		assert.doesNotMatch(reloadedLeaf[0].systemPrompt, /NESTED-PREAMBLE-MARKER|Observer preset marker|Dynamic preset marker/);
 	} finally {
+		if (reloadedHarness) await reloadedHarness.emit("session_shutdown", { type: "session_shutdown" }, ctx);
 		await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx);
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

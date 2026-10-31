@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, type Skill } from "@earendil-works/pi-coding-agent";
 
 const ENV_AGENT_DIR = "PI_CODING_AGENT_DIR";
 import { loadExtensionConfig, parseExtensionConfig } from "../src/config.ts";
@@ -83,6 +83,59 @@ test("root context follows lifecycle events, even with delegate inactive, and st
 	await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx);
 	const result = await harness.execute(ctx, { title: "test", input: "test" });
 	assert.deepEqual(result.details, { status: "failed", error: "The root session is unavailable." });
+}));
+
+test("root snapshots definitions once, validates against full skills, and refreshes after shutdown", withSandbox(async (project, agentDir) => {
+	const dir = join(agentDir, "agents");
+	mkdirSync(dir);
+	const definition = join(dir, "agent.md");
+	writeFileSync(definition, "---\nname: first\nunknown: ignored\nskills: { preload: [hidden] }\n---\nBody");
+	writeConfig(agentDir, { agentPresets: { initial: { base: "parent", description: "Initial preset" } } });
+	const { ctx, notifications } = fakeContext(project);
+	const hidden = { name: "hidden", disableModelInvocation: true } as Skill;
+	const first = createExtensionHarness();
+	await first.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+	// Changes after session startup, but before the first turn, require reload.
+	writeFileSync(definition, "---\nname: second\nskills: { preload: [missing] }\n---\n");
+	writeConfig(agentDir, { agentPresets: { refreshed: { base: "parent", description: "Refreshed preset" } } });
+	// Validation completes after resource discovery even when delegate is inactive.
+	assert.equal(first.beforeStart(ctx, [], "prompt", [hidden]), undefined);
+	assert.equal(notifications.length, 1);
+	assert.match(notifications[0].message, /agent\.md.*unknown/);
+	const prompt = first.beforeStart(ctx, ["delegate"], "prompt", [])!.systemPrompt!;
+	assert.match(prompt, /Initial preset/);
+	assert.doesNotMatch(prompt, /Refreshed preset/);
+	assert.equal(notifications.length, 1, "no rescanning or duplicate warnings");
+	await first.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+	const next = createExtensionHarness();
+	const refreshed = next.beforeStart(ctx, ["delegate"], "prompt", [])!.systemPrompt!;
+	assert.match(refreshed, /Refreshed preset/);
+	assert.doesNotMatch(refreshed, /Initial preset/);
+	assert.equal(notifications.length, 2);
+	assert.match(notifications[1].message, /agent\.md.*unknown preloaded skill.*missing/);
+	await next.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+}));
+
+test("definition diagnostics remain visible without a UI", withSandbox(async (project, agentDir) => {
+	const dir = join(agentDir, "agents");
+	mkdirSync(dir);
+	writeFileSync(join(dir, "invalid.md"), "---\nname: [invalid]\n---\n");
+	const { ctx, notifications } = fakeContext(project);
+	Object.assign(ctx, { hasUI: false });
+	const harness = createExtensionHarness();
+	const warnings: string[] = [];
+	const original = console.warn;
+	console.warn = (message: unknown) => { warnings.push(String(message)); };
+	try {
+		harness.beforeStart(ctx, []);
+		harness.beforeStart(ctx, []);
+		assert.equal(notifications.length, 0);
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0], /invalid\.md.*name/);
+	} finally {
+		console.warn = original;
+		await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+	}
 }));
 
 test("extension harness invokes prompt events and delegate guards", withSandbox(async (project, agentDir) => {

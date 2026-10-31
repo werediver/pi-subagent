@@ -12,6 +12,7 @@ import {
 import { Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import { loadExtensionConfig, type ExtensionConfig } from "./config.ts";
+import { buildAgentSnapshot, captureAgentSources, type AgentSnapshot, type AgentSources } from "./agent-definitions.ts";
 import { getAgentPresetAvailability, formatAvailableAgentPresets, resolveAgentPreset, type ModelSettings } from "./model-resolver.ts";
 import { ContinuationQueue } from "./queue.ts";
 import { ChildRegistry, type ChildSession, disposeChild } from "./registry.ts";
@@ -34,7 +35,13 @@ export type DelegateCmdParams = Static<typeof DelegateCmdParams>;
 
 // Pi contexts expose live model and thinking getters. Only the root runtime owns
 // this reference; descendants read it rather than capturing a model at creation.
-type RootSharedState = { context?: ExtensionContext; closed: boolean };
+type RootSharedState = {
+	context?: ExtensionContext;
+	closed: boolean;
+	baseConfig?: { config: ExtensionConfig } | { error: unknown };
+	sources?: AgentSources;
+	snapshot?: AgentSnapshot;
+};
 
 function createExtensionFactory(root: RootSharedState, registry: ChildRegistry, sourcePath: string, callerSubordinationLevel: number): (pi: ExtensionAPI) => void {
 	return (pi) => registerExtension(pi, root, registry, sourcePath, callerSubordinationLevel + 1);
@@ -42,29 +49,34 @@ function createExtensionFactory(root: RootSharedState, registry: ChildRegistry, 
 
 function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = new ChildRegistry(), sourcePath = extensionSourcePath, subordinationLevel = 0): void {
 	const notifiedConfigurationWarnings = new Set<string>();
-	let baseConfigCache: {
-		cwd: string;
-		trusted: boolean;
-		result: { config: ExtensionConfig } | { error: unknown };
-	} | undefined;
-	const getBaseConfig = (ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): ExtensionConfig => {
-		const trusted = ctx.isProjectTrusted();
-		if (baseConfigCache?.cwd === ctx.cwd && baseConfigCache.trusted === trusted) {
-			if ("config" in baseConfigCache.result) return baseConfigCache.result.config;
-			throw baseConfigCache.result.error;
+	const getBaseConfig = (): ExtensionConfig => {
+		if (root.snapshot) return root.snapshot.config;
+		if (root.sources) return root.sources.config;
+		if (!root.baseConfig) {
+			if (!root.context || root.closed) throw new Error("The root session is unavailable.");
+			try { root.baseConfig = { config: loadExtensionConfig(root.context) }; }
+			catch (error) { root.baseConfig = { error }; }
 		}
-		try {
-			const config = loadExtensionConfig(ctx);
-			baseConfigCache = { cwd: ctx.cwd, trusted, result: { config } };
-			return config;
-		} catch (error) {
-			baseConfigCache = { cwd: ctx.cwd, trusted, result: { error } };
-			throw error;
-		}
+		if ("config" in root.baseConfig) return root.baseConfig.config;
+		throw root.baseConfig.error;
+	};
+	const captureRootSources = (ctx: ExtensionContext): AgentSources => {
+		if (!root.sources) root.sources = captureAgentSources({ cwd: ctx.cwd, agentDir: getAgentDir(), trusted: ctx.isProjectTrusted(), config: getBaseConfig() });
+		return root.sources;
+	};
+	const reportConfigError = (ctx: ExtensionContext, error: unknown) => {
+		const message = error instanceof Error ? error.message : String(error);
+		if (notifiedConfigurationWarnings.has(message)) return;
+		notifiedConfigurationWarnings.add(message);
+		if (ctx.hasUI) ctx.ui.notify(`Could not load pi-subagent configuration: ${message}`, "warning");
+		else console.warn(`Could not load pi-subagent configuration: ${message}`);
 	};
 	if (subordinationLevel === 0) {
 		const updateRootContext = (_event: unknown, ctx: ExtensionContext) => { if (!root.closed) root.context = ctx; };
-		pi.on("session_start", updateRootContext);
+		pi.on("session_start", (event, ctx) => {
+			updateRootContext(event, ctx);
+			if (!root.closed) try { captureRootSources(ctx); } catch (error) { reportConfigError(ctx, error); }
+		});
 		pi.on("model_select", updateRootContext);
 		pi.on("thinking_level_select", updateRootContext);
 	}
@@ -78,15 +90,27 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 		if (details?.status !== "completed") return { isError: true };
 	});
 	pi.on("before_agent_start", (event, ctx) => {
-		if (subordinationLevel === 0 && !root.closed) root.context = ctx;
+		if (subordinationLevel === 0 && !root.closed) {
+			root.context = ctx;
+			if (!root.snapshot) {
+				try {
+					// The full loaded skill list is exposed only after resource discovery.
+					root.snapshot = buildAgentSnapshot(captureRootSources(ctx), (event.systemPromptOptions.skills ?? []).map((skill) => skill.name));
+					for (const diagnostic of root.snapshot.diagnostics) {
+						const message = `Agent definition ${diagnostic.filename}: ${diagnostic.reason}`;
+						if (ctx.hasUI) ctx.ui.notify(message, "warning");
+						else console.warn(message);
+					}
+				} catch (error) { reportConfigError(ctx, error); }
+			}
+		}
 		const delegateToolActive = event.systemPromptOptions.selectedTools?.includes("delegate") ?? false;
 		if (!delegateToolActive && subordinationLevel === 0) return;
 		let config;
 		try {
-			config = getBaseConfig(ctx);
+			config = getBaseConfig();
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			ctx.ui.notify(`Could not load pi-subagent configuration: ${message}`, "warning");
+			reportConfigError(ctx, error);
 			config = { agentPresets: {} };
 		}
 		const promptSections: string[] = [];
@@ -149,7 +173,7 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 			let resolvedModel: ModelSettings;
 			let toolRules: ToolAccessRule[];
 			try {
-				const config = getBaseConfig(ctx);
+				const config = getBaseConfig();
 				resolvedModel = resolveAgentPreset(params.agentPreset, config, ctx, rootModel, rootContext.modelRegistry);
 				toolRules = resolveToolAccessRules(params.agentPreset, config);
 			} catch (error) {

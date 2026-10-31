@@ -1,5 +1,5 @@
 import type { Model } from "@earendil-works/pi-ai";
-import type { BeforeAgentStartEvent, BeforeAgentStartEventResult, ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { BeforeAgentStartEvent, BeforeAgentStartEventResult, ExtensionAPI, ExtensionContext, ToolDefinition, Skill } from "@earendil-works/pi-coding-agent";
 import type { DelegateCmdParams } from "../src/index.ts";
 import registerExtension from "../src/index.ts";
 
@@ -40,10 +40,10 @@ export function createExtensionHarness(factory: (pi: ExtensionAPI) => void = reg
 			if (!handler) throw new Error("No handler for " + name);
 			return handler(event, ctx);
 		},
-		beforeStart: (ctx: ExtensionContext, selectedTools: string[], systemPrompt = "base prompt"): BeforeAgentStartEventResult | undefined => {
+		beforeStart: (ctx: ExtensionContext, selectedTools: string[], systemPrompt = "base prompt", skills: Skill[] = []): BeforeAgentStartEventResult | undefined => {
 			const handler = handlers.get("before_agent_start");
 			if (!handler) throw new Error("No before_agent_start handler");
-			const event = { type: "before_agent_start", prompt: "test", systemPrompt, systemPromptOptions: { selectedTools } } as BeforeAgentStartEvent;
+			const event = { type: "before_agent_start", prompt: "test", systemPrompt, systemPromptOptions: { selectedTools, skills } } as BeforeAgentStartEvent;
 			return handler(event, ctx);
 		},
 		execute: (ctx: ExtensionContext, params: DelegateCmdParams) => delegate.execute("test-call", params, undefined, undefined, ctx),
