@@ -6,13 +6,14 @@ import {
 	AgentModelNotFoundError,
 	AgentPresetError,
 	ModelNotFoundError,
-	getAgentPresetAvailability,
+	formatAgentDigest,
+	getAgentAvailability,
 	resolveAgentModel,
 	resolveAgentPreset,
 	type ModelSettings,
 } from "../src/model-resolver.ts";
 import { evaluateToolAccess } from "../src/tool-access.ts";
-import type { AgentDefinition } from "../src/agent-definitions.ts";
+import { buildAgentSnapshot, type AgentDefinition } from "../src/agent-definitions.ts";
 
 type ModelContext = Parameters<typeof resolveAgentPreset>[2];
 
@@ -116,20 +117,6 @@ test("model resolution detects self and indirect cycles and unknown bases", () =
 	}
 });
 
-test("availability sorts resolvable custom presets and does not substitute parent for absent root", () => {
-	const presets = config({
-		z: { base: "main" }, a: { base: "parent" },
-		bad1: { base: "absent" }, bad2: { base: "absent" },
-		missing: { model: "not-registered", provider: "p" },
-		parent: { description: "custom description" },
-	});
-	assert.deepEqual(getAgentPresetAvailability(presets, context(parent), undefined), {
-		names: ["parent", "a"],
-		diagnostics: ['Unknown agent preset "absent". Configure it in subagent.json.', 'Model p/not-registered for agent preset "missing" was not found.'],
-	});
-	assert.deepEqual(getAgentPresetAvailability(config({ needsProvider: { model: "x" } }), context(undefined), undefined), { names: [], diagnostics: [] });
-});
-
 test("tool rules default to enabled, preserve available order, and apply last match", () => {
 	const names = ["read", "write", "bash", "web_search"];
 	assert.deepEqual(evaluateToolAccess([], names), names);
@@ -191,6 +178,71 @@ test("agents with concrete model IDs resolve from the root provider unless the p
 	const caller = context(parent, [parentShared]);
 	assert.deepEqual(resolve(agentDefinition({ model: { kind: "id", name: "shared" } }), config(), caller, mainSettings, context(main, [mainShared]).modelRegistry), { model: mainShared });
 	assert.throws(() => resolve(agentDefinition({ model: { kind: "id", name: "shared" } }), config(), caller, mainSettings, context(main, [parentShared]).modelRegistry), AgentModelNotFoundError);
+});
+
+test("agent availability re-resolves the immutable snapshot against live root model and registry", () => {
+	const snapshot = buildAgentSnapshot({
+		config: config({ configured: { model: "shared", description: "preset metadata" } }),
+		sources: [
+			{ filename: "z.md", content: "---\nname: implicit\nmodel: shared\n---\nprivate body" },
+			{ filename: "a.md", content: "---\nname: inherited\n---\n" },
+			{ filename: "b.md", content: "---\nname: preset\nmodel: configured\n---\n" },
+			{ filename: "c.md", content: "---\nname: root\nmodel: main\n---\n" },
+			{ filename: "d.md", content: "---\nname: fixed\nmodel: shared\nprovider: explicit-provider\n---\n" },
+			{ filename: "rejected.md", content: "---\nname: rejected\ntools: invalid\n---\n" },
+		],
+	}, []);
+	const original = structuredClone(snapshot);
+	const caller = context(parent, [parentShared]);
+	const liveModels = [mainShared, explicitShared];
+	const rootRegistry = context(main, liveModels).modelRegistry;
+	const names = (root: ModelSettings | undefined) => getAgentAvailability(snapshot, caller, root, rootRegistry).map((agent) => agent.name);
+	assert.deepEqual(names(mainSettings), ["implicit", "inherited", "preset", "root", "fixed"]);
+	assert.deepEqual(names({ model: parent }), ["inherited", "root", "fixed"]);
+	assert.deepEqual(names(undefined), ["inherited", "fixed"]);
+
+	// A known but unavailable agent stays in the snapshot and reports a model error;
+	// unknown and statically rejected names have no definition to resolve.
+	const known = snapshot.definitions.find((definition) => definition.name === "implicit");
+	assert.ok(known);
+	assert.throws(() => resolveAgentModel(known, snapshot.config, caller, { model: parent }, rootRegistry), AgentModelNotFoundError);
+	assert.equal(snapshot.definitions.find((definition) => definition.name === "unknown"), undefined);
+	assert.equal(snapshot.definitions.find((definition) => definition.name === "rejected"), undefined);
+	assert.equal(snapshot.diagnostics.length, 1);
+
+	// Registry changes also affect subsequent checks, and default to the caller registry.
+	liveModels.push(parentShared);
+	assert.deepEqual(names({ model: parent }), ["implicit", "inherited", "preset", "root", "fixed"]);
+	liveModels.splice(0, 1);
+	assert.deepEqual(names(mainSettings), ["inherited", "root", "fixed"]);
+	liveModels.unshift(mainShared);
+	assert.deepEqual(names(mainSettings), ["implicit", "inherited", "preset", "root", "fixed"]);
+	assert.deepEqual(getAgentAvailability(snapshot, caller, mainSettings).map((agent) => agent.name), ["inherited", "root"]);
+	assert.deepEqual(snapshot, original);
+	assert.ok(Object.isFrozen(snapshot.definitions));
+	assert.strictEqual(getAgentAvailability(snapshot, caller, mainSettings, rootRegistry)[0], known);
+});
+
+test("digest contains only safely formatted names and optional descriptions", () => {
+	const definitions = [
+		agentDefinition({ name: `evil\n<&\"'\u001b[31mred\u001b[0m`, description: `first\r\nsecond <tag> & \"'\u0000`, prompt: "SECRET_BODY", model: { kind: "preset", name: "secret-preset" } }),
+		agentDefinition({ name: "plain", prompt: "OTHER_SECRET_BODY" }),
+	];
+	const digest = formatAgentDigest(definitions);
+	assert.equal(digest, [
+		"The following agents are available for the `delegate` tool. Set `agent` to one of these names.",
+		"<delegate_agent_options>",
+		"- &quot;evil &lt;&amp;\\&quot;&apos;red&quot;: first second &lt;tag&gt; &amp; &quot;&apos;",
+		"- &quot;plain&quot;",
+		"</delegate_agent_options>",
+	].join("\n"));
+	assert.doesNotMatch(digest, /SECRET|secret-preset|agentPreset|\u001b|\u0000/);
+	assert.equal(formatAgentDigest([]), [
+		"The following agents are available for the `delegate` tool. Set `agent` to one of these names.",
+		"<delegate_agent_options>",
+		"",
+		"</delegate_agent_options>",
+	].join("\n"));
 });
 
 test("agent model errors are actionable and distinct from preset errors", () => {

@@ -13,7 +13,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import { loadExtensionConfig, type ExtensionConfig } from "./config.ts";
 import { buildAgentSnapshot, captureAgentSources, type AgentSnapshot, type AgentSources } from "./agent-definitions.ts";
-import { resolveAgentModel, type ModelSettings } from "./model-resolver.ts";
+import { formatAgentDigest, getAgentAvailability, resolveAgentModel, type ModelSettings } from "./model-resolver.ts";
 import { ContinuationQueue } from "./queue.ts";
 import { ChildRegistry, type ChildSession, disposeChild } from "./registry.ts";
 import { runChildRequest } from "./runner.ts";
@@ -106,7 +106,11 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 				} catch (error) { reportConfigError(ctx, error); }
 			}
 		}
-
+		if (!event.systemPromptOptions.selectedTools?.includes("delegate") || !root.snapshot || !root.context || root.closed) return;
+		const rootContext = root.context;
+		const rootModel = rootContext.model ? { model: rootContext.model, thinkingLevel: rootContext.thinkingLevel } : undefined;
+		const available = getAgentAvailability(root.snapshot, ctx, rootModel, rootContext.modelRegistry);
+		return { systemPrompt: `${event.systemPrompt}\n\n${formatAgentDigest(available)}` };
 	});
 	pi.registerTool({
 		name: "delegate",
@@ -165,6 +169,7 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 			const nestedRegistry = new ChildRegistry();
 			let child: ChildSession | undefined;
 			let createdSession: AgentSession | undefined;
+			let shutdownSession: (() => Promise<void>) | undefined;
 			try {
 				const setup = (async () => {
 					// The root catalog includes hidden and extension-provided skills, which may
@@ -177,15 +182,24 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 						extensionFactories: [{ name: "pi-subagent", factory: createExtensionFactory(root, nestedRegistry, sourcePath, subordinationLevel), hidden: true }],
 						noPromptTemplates: true,
 						noThemes: true,
+						// Preserve all skills for explicit /skill:name expansion. Pi uses this
+						// flag only to exclude entries from the automatic prompt catalog.
+						skillsOverride: definition.skills.allowDiscovery ? undefined : (current) => ({
+							...current, skills: current.skills.map((skill) => ({ ...skill, disableModelInvocation: true })),
+						}),
 						appendSystemPromptOverride: (current) => [...current, ...(definition.prompt.trim() ? [definition.prompt] : []), ...(preloadedSkills.length ? [formatPreloadedSkills(preloadedSkills)] : [])],
 					});
 					await resourceLoader.reload();
 					if (registry.isClosed()) throw new Error("The extension runtime is shutting down.");
 					const { session } = await createAgentSession({ cwd: ctx.cwd, model: resolvedModel.model, thinkingLevel: resolvedModel.thinkingLevel, resourceLoader, sessionManager: SessionManager.inMemory(ctx.cwd) });
-					if (definition.tools.length > 0) session.setActiveToolsByName(evaluateToolAccess(definition.tools, session.getAllTools().map((tool) => tool.name)));
 					createdSession = session;
-					if (registry.isClosed()) { session.dispose(); createdSession = undefined; throw new Error("The extension runtime is shutting down."); }
-					child = { session, cwd: ctx.cwd, nestedRegistry, queue: undefined as never };
+					shutdownSession = async () => { await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); };
+					// Bind before the first turn so extension-provided resources are discovered.
+					await session.bindExtensions({ mode: "print", onError: (error) => console.warn(`Child extension ${error.extensionPath} (${error.event}): ${error.error}`) });
+					// Startup handlers may register more tools; apply restrictions after binding.
+					if (definition.tools.length > 0) session.setActiveToolsByName(evaluateToolAccess(definition.tools, session.getAllTools().map((tool) => tool.name)));
+					if (registry.isClosed()) throw new Error("The extension runtime is shutting down.");
+					child = { session, cwd: ctx.cwd, nestedRegistry, queue: undefined as never, shutdown: shutdownSession };
 					child.queue = new ContinuationQueue(session, (request) => runChildRequest(child!, request.input, request.signal, request.onUpdate, request.theme, ctx.cwd));
 					registry.add(child);
 				})();
@@ -196,8 +210,16 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 				result.sessionId = child.session.sessionId;
 				return createDelegateToolResult(result);
 			} catch (error) {
-				if (child) { registry.remove(child.session.sessionId, child); await disposeChild(child); }
-				else { createdSession?.dispose(); await nestedRegistry.close(); }
+				try {
+					if (child) { registry.remove(child.session.sessionId, child); await disposeChild(child); }
+					else {
+						try { await nestedRegistry.close(); }
+						finally {
+							try { await shutdownSession?.(); }
+							finally { createdSession?.dispose(); }
+						}
+					}
+				} catch (cleanupError) { console.warn(`Could not fully clean up a child session: ${String(cleanupError)}`); }
 				return createDelegateToolResult(resultError(abortSignal.aborted ? "cancelled" : "failed", error instanceof Error ? error.message : String(error)));
 			}
 		},

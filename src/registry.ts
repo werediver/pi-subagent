@@ -6,6 +6,7 @@ export type ChildSession = {
 	cwd: string;
 	queue: ContinuationQueue;
 	nestedRegistry: ChildRegistry;
+	shutdown?: () => Promise<void>;
 	cleanup?: Promise<void>;
 };
 
@@ -32,9 +33,11 @@ export class ChildRegistry {
 		if (this.closing) return this.closing;
 		this.closed = true;
 		this.closing = (async () => {
-			await Promise.all([...this.children.values()].map((child) => disposeChild(child)));
+			const results = await Promise.allSettled([...this.children.values()].map((child) => disposeChild(child)));
 			await Promise.allSettled([...this.setups]);
 			this.children.clear();
+			const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+			if (failures.length) throw new AggregateError(failures.map((result) => result.reason), "Could not close all child sessions.");
 		})();
 		return this.closing;
 	}
@@ -43,9 +46,14 @@ export class ChildRegistry {
 export async function disposeChild(child: ChildSession): Promise<void> {
 	if (child.cleanup) return child.cleanup;
 	child.cleanup = (async () => {
-		await child.nestedRegistry.close();
-		await child.queue.close();
-		child.session.dispose();
+		try { await child.nestedRegistry.close(); }
+		finally {
+			try { await child.queue.close(); }
+			finally {
+				try { await child.shutdown?.(); }
+				finally { child.session.dispose(); }
+			}
+		}
 	})();
 	return child.cleanup;
 }

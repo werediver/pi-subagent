@@ -241,6 +241,20 @@ test("registry removal is identity-safe and shutdown disposes nested children be
 	assert.equal(events.length, 4);
 });
 
+test("cleanup continues through a failing descendant shutdown", async () => {
+	const events: string[] = [];
+	const registry = new ChildRegistry();
+	const parent = child("parent", events);
+	const nested = child("nested", events);
+	nested.shutdown = async () => { events.push("shutdown:nested"); throw new Error("shutdown failed"); };
+	parent.shutdown = async () => { events.push("shutdown:parent"); };
+	parent.nestedRegistry.add(nested);
+	registry.add(parent);
+	await assert.rejects(registry.close(), /Could not close all child sessions/);
+	assert.deepEqual(events, ["abort:nested", "shutdown:nested", "dispose:nested", "abort:parent", "shutdown:parent", "dispose:parent"]);
+	assert.equal(registry.get("parent"), undefined);
+});
+
 test("registry shutdown waits for tracked setups even when they reject", async () => {
 	const registry = new ChildRegistry();
 	const setup = deferred<void>();

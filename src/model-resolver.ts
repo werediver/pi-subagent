@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExtensionConfig } from "./config.ts";
-import type { AgentDefinition } from "./agent-definitions.ts";
+import type { AgentDefinition, AgentSnapshot } from "./agent-definitions.ts";
 import { escapeXml, oneLine } from "./text.ts";
 
 export type ModelSettings = { model: Model<any>; thinkingLevel?: ModelThinkingLevel };
@@ -110,41 +110,31 @@ function resolveConcreteAgentModel(
 	return { model: found };
 }
 
-export function formatAvailableAgentPresets(names: readonly string[], config: ExtensionConfig): string {
-	const descriptions = new Map([["parent", "The parent session model (default)"], ["main", "The main session model"]]);
-	return [
-		"The following agent presets are available for the `delegate` tool. Set `agentPreset` to one of these names.",
-		"<delegate_agentPreset_options>",
-		names.map((name) => {
-			const description = config.agentPresets[name]?.description ?? descriptions.get(name);
-			return description ? `- ${escapeXml(JSON.stringify(oneLine(name)))}: ${escapeXml(oneLine(description))}` : `- ${escapeXml(JSON.stringify(oneLine(name)))}`;
-		}).join("\n"),
-		"</delegate_agentPreset_options>",
-	].join("\n");
-}
-
-export type AgentPresetAvailability = {
-	names: string[];
-	diagnostics: string[];
-};
-
-export function getAgentPresetAvailability(
-	config: ExtensionConfig,
+/** Return currently resolvable definitions in snapshot discovery order without changing the snapshot. */
+export function getAgentAvailability(
+	snapshot: AgentSnapshot,
 	ctx: ModelContext,
-	mainModel: ModelSettings | undefined,
+	rootModel: ModelSettings | undefined,
 	rootRegistry: ModelContext["modelRegistry"] = ctx.modelRegistry,
-): AgentPresetAvailability {
-	const names = [...(ctx.model ? ["parent"] : []), ...(mainModel ? ["main"] : [])];
-	const diagnostics = new Set<string>();
-	for (const name of Object.keys(config.agentPresets).sort()) if (name !== "parent" && name !== "main") try {
-		resolveAgentPreset(name, config, ctx, mainModel, rootRegistry);
-		names.push(name);
-	} catch (error) {
-		if (error instanceof AgentPresetError) diagnostics.add(error.message);
-	}
-	return { names, diagnostics: [...diagnostics] };
+): AgentDefinition[] {
+	return snapshot.definitions.filter((definition) => {
+		try {
+			resolveAgentModel(definition, snapshot.config, ctx, rootModel, rootRegistry);
+			return true;
+		} catch {
+			return false;
+		}
+	});
 }
 
-export function getAvailableAgentPresetNames(config: ExtensionConfig, ctx: ModelContext, mainModel: ModelSettings | undefined): string[] {
-	return getAgentPresetAvailability(config, ctx, mainModel).names;
+/** Format only agent names and optional descriptions for the delegation prompt. */
+export function formatAgentDigest(definitions: readonly AgentDefinition[]): string {
+	return [
+		"The following agents are available for the `delegate` tool. Set `agent` to one of these names.",
+		"<delegate_agent_options>",
+		definitions.map(({ name, description }) => description
+			? `- ${escapeXml(JSON.stringify(oneLine(name)))}: ${escapeXml(oneLine(description))}`
+			: `- ${escapeXml(JSON.stringify(oneLine(name)))}`).join("\n"),
+		"</delegate_agent_options>",
+	].join("\n");
 }
