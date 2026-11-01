@@ -3,13 +3,16 @@ import assert from "node:assert/strict";
 import type { Model } from "@earendil-works/pi-ai";
 import type { ExtensionConfig } from "../src/config.ts";
 import {
+	AgentModelNotFoundError,
 	AgentPresetError,
 	ModelNotFoundError,
 	getAgentPresetAvailability,
+	resolveAgentModel,
 	resolveAgentPreset,
 	type ModelSettings,
 } from "../src/model-resolver.ts";
-import { evaluateToolAccess, resolveToolAccessRules } from "../src/tool-access.ts";
+import { evaluateToolAccess } from "../src/tool-access.ts";
+import type { AgentDefinition } from "../src/agent-definitions.ts";
 
 type ModelContext = Parameters<typeof resolveAgentPreset>[2];
 
@@ -150,35 +153,52 @@ test("tool patterns are case-sensitive, whole-name globs with literal regex meta
 	], names), ["Read", "bread", "read_more", "axb", "tool1", "preMIDpostX"]);
 });
 
-test("tool rules inherit base-first across presets and derived rules override matching base rules", () => {
+function agentDefinition(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
+	return { name: "tester", prompt: "", tools: [], skills: { allowDiscovery: true, preload: [] }, ...overrides };
+}
+
+const resolve = (definition: AgentDefinition, presets: ExtensionConfig, ctx: ModelContext, main: ModelSettings | undefined = mainSettings, registry = ctx.modelRegistry) =>
+	resolveAgentModel(definition, presets, ctx, main, registry);
+
+test("agents with omitted models inherit the calling session, with explicit thinkingLevel overriding it", () => {
+	const ctx = context(parent, allModels);
+	assert.deepEqual(resolve(agentDefinition(), config(), ctx), { model: parent, thinkingLevel: "low" });
+	assert.deepEqual(resolve(agentDefinition({ thinkingLevel: "high" }), config(), ctx), { model: parent, thinkingLevel: "high" });
+	assert.throws(() => resolve(agentDefinition({ thinkingLevel: "high" }), config(), context(undefined), undefined), /The parent session has no active model/);
+});
+
+test("agents with preset models resolve through preset ancestry and agent thinkingLevel overrides the preset", () => {
 	const presets = config({
-		base: { model: "m", tools: { "*": false, "read*": true } },
-		middle: { base: "base", tools: { read_secret: false, bash: true } },
-		child: { base: "middle", tools: { "read*": false, read_file: true } },
+		preview: { model: "shared", provider: "explicit-provider", thinkingLevel: "medium" },
+		rooted: { base: "main", thinkingLevel: "xhigh" },
 	});
-	const rules = resolveToolAccessRules(" child ", presets);
-	assert.deepEqual(rules, [
-		{ pattern: "*", enabled: false }, { pattern: "read*", enabled: true },
-		{ pattern: "read_secret", enabled: false }, { pattern: "bash", enabled: true },
-		{ pattern: "read*", enabled: false }, { pattern: "read_file", enabled: true },
-	]);
-	assert.deepEqual(evaluateToolAccess(rules, ["read_file", "read_secret", "bash", "write"]), ["read_file", "bash"]);
+	const ctx = context(parent, allModels);
+	assert.deepEqual(resolve(agentDefinition({ model: { kind: "preset", name: "preview" } }), presets, ctx), { model: explicitShared, thinkingLevel: "medium" });
+	assert.deepEqual(resolve(agentDefinition({ model: { kind: "preset", name: "preview" }, thinkingLevel: "off" }), presets, ctx), { model: explicitShared, thinkingLevel: "off" });
+	assert.deepEqual(resolve(agentDefinition({ model: { kind: "preset", name: "main" } }), presets, ctx), mainSettings);
+	assert.deepEqual(resolve(agentDefinition({ model: { kind: "preset", name: "rooted" } }), presets, ctx), { model: main, thinkingLevel: "xhigh" });
+	assert.deepEqual(resolve(agentDefinition({ model: { kind: "preset", name: "parent" } }), presets, ctx), { model: parent, thinkingLevel: "low" });
+	assert.throws(() => resolve(agentDefinition({ model: { kind: "preset", name: "absent" } }), presets, ctx), { name: "AgentPresetError", message: 'Unknown agent preset "absent". Configure it in subagent.json.' });
 });
 
-test("tool resolution treats built-ins as empty and returns rules even for description-only presets", () => {
-	const presets = config({ parent: { description: "parent" }, main: { description: "main" }, custom: { description: "description only" }, fromMain: { base: "main", tools: { bash: false } } });
-	for (const name of [undefined, "", "  ", "parent", "main", "custom"]) assert.deepEqual(resolveToolAccessRules(name, presets), []);
-	assert.deepEqual(resolveToolAccessRules("fromMain", presets), [{ pattern: "bash", enabled: false }]);
+test("agents with concrete model IDs resolve from the root provider unless the provider is explicit", () => {
+	const ctx = context(parent, allModels);
+	// Implicit provider: the root (main) provider, never the caller provider.
+	assert.deepEqual(resolve(agentDefinition({ model: { kind: "id", name: "shared" } }), config(), ctx), { model: mainShared });
+	// Explicit provider and agent thinkingLevel override.
+	assert.deepEqual(resolve(agentDefinition({ model: { kind: "id", name: "shared", provider: "explicit-provider" }, thinkingLevel: "max" }), config(), ctx), { model: explicitShared, thinkingLevel: "max" });
+	// Availability checks use the root registry, not the calling session's registry.
+	const caller = context(parent, [parentShared]);
+	assert.deepEqual(resolve(agentDefinition({ model: { kind: "id", name: "shared" } }), config(), caller, mainSettings, context(main, [mainShared]).modelRegistry), { model: mainShared });
+	assert.throws(() => resolve(agentDefinition({ model: { kind: "id", name: "shared" } }), config(), caller, mainSettings, context(main, [parentShared]).modelRegistry), AgentModelNotFoundError);
 });
 
-test("tool resolution reports unknown presets, unknown bases, and circular inheritance", () => {
-	const presets = config({ broken: { base: "absent" }, self: { base: "self" }, a: { base: "b" }, b: { base: "a" } });
-	for (const [name, message] of [
-		["unknown", 'Unknown agent preset "unknown". Configure it in subagent.json.'],
-		["broken", 'Unknown agent preset "absent". Configure it in subagent.json.'],
-		["self", 'Circular agent preset reference involving "self".'],
-		["a", 'Circular agent preset reference involving "a".'],
-	] as const) {
-		assert.throws(() => resolveToolAccessRules(name, presets), { name: "AgentPresetError", message });
-	}
+test("agent model errors are actionable and distinct from preset errors", () => {
+	const ctx = context(parent, allModels);
+	assert.throws(() => resolve(agentDefinition({ model: { kind: "id", name: "missing" } }), config(), ctx), (error: unknown) => {
+		assert.ok(error instanceof AgentModelNotFoundError);
+		assert.equal(error.message, 'Model main-provider/missing for agent "tester" was not found in the model registry. Register the model or set the agent\'s provider.');
+		return true;
+	});
+	assert.throws(() => resolveAgentModel(agentDefinition({ model: { kind: "id", name: "shared" } }), config(), context(undefined, allModels), undefined), { name: "Error", message: 'Agent "tester" needs a provider because the root session has no active model.' });
 });

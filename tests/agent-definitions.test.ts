@@ -109,7 +109,7 @@ test("capture freezes files and config; build applies skill names without rescan
 	const project = put("project", "a.md", agent("shared", "model: review\nskills: { preload: [late] }\n", "project original"));
 	const user = put("user", "b.md", agent("shared", "description: fallback\n", "user original"));
 	const deleted = put("user", "c.md", agent("deleted", "", "still captured"));
-	const config: ExtensionConfig = { agentPresets: { review: { model: "old", tools: { bash: false } } } };
+	const config: ExtensionConfig = { agentPresets: { review: { model: "old", thinkingLevel: "low" } } };
 	const captured = capture(true, config);
 	assert.ok(Object.isFrozen(captured) && Object.isFrozen(captured.sources) && Object.isFrozen(captured.sources[0]) && Object.isFrozen(captured.config.agentPresets.review));
 	assert.throws(() => { (captured.sources as unknown[]).push({}); }, TypeError);
@@ -125,7 +125,7 @@ test("capture freezes files and config; build applies skill names without rescan
 	assert.deepEqual(withSkill.definitions[0].model, { kind: "preset", name: "review" });
 	assert.match(withSkill.diagnostics[0].reason, /duplicate/);
 	assert.equal(withSkill.diagnostics[0].filename, user);
-	assert.deepEqual(withSkill.config.agentPresets.review, { model: "old", tools: { bash: false } });
+	assert.deepEqual(withSkill.config.agentPresets.review, { model: "old", thinkingLevel: "low" });
 	const withoutSkill = buildAgentSnapshot(captured, []);
 	assert.deepEqual(withoutSkill.definitions.map((definition) => [definition.name, definition.prompt]), [["shared", "user original"], ["deleted", "still captured"]]);
 	assert.equal(withoutSkill.diagnostics[0].filename, project);
@@ -179,11 +179,11 @@ test("untrusted capture excludes project files even if later built after changes
 
 test("snapshot and nested configuration are immutable deep copies", () => fixture(({ put, discover }) => {
 	put("user", "a.md", agent("a", "tools: { read: false }\nskills: { preload: [one] }\n"));
-	const config: ExtensionConfig = { agentPresets: { review: { model: "old", tools: { bash: false } } } };
+	const config: ExtensionConfig = { agentPresets: { review: { model: "old", thinkingLevel: "low" } } };
 	const snapshot = discover(true, config, ["one"]);
 	(config.agentPresets.review as { model: string }).model = "new";
-	(config.agentPresets.review as { tools: Record<string, boolean> }).tools.bash = true;
-	assert.deepEqual(snapshot.config.agentPresets.review, { model: "old", tools: { bash: false } });
+	(config.agentPresets.review as { thinkingLevel: string }).thinkingLevel = "high";
+	assert.deepEqual(snapshot.config.agentPresets.review, { model: "old", thinkingLevel: "low" });
 	assert.ok(Object.isFrozen(snapshot) && Object.isFrozen(snapshot.definitions) && Object.isFrozen(snapshot.definitions[0].tools[0]) && Object.isFrozen(snapshot.definitions[0].skills.preload) && Object.isFrozen(snapshot.config.agentPresets.review));
 	assert.throws(() => { (snapshot.definitions[0].tools[0] as { enabled: boolean }).enabled = true; }, TypeError);
 }));

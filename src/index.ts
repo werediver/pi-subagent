@@ -13,11 +13,11 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import { loadExtensionConfig, type ExtensionConfig } from "./config.ts";
 import { buildAgentSnapshot, captureAgentSources, type AgentSnapshot, type AgentSources } from "./agent-definitions.ts";
-import { getAgentPresetAvailability, formatAvailableAgentPresets, resolveAgentPreset, type ModelSettings } from "./model-resolver.ts";
+import { resolveAgentModel, type ModelSettings } from "./model-resolver.ts";
 import { ContinuationQueue } from "./queue.ts";
 import { ChildRegistry, type ChildSession, disposeChild } from "./registry.ts";
 import { runChildRequest } from "./runner.ts";
-import { evaluateToolAccess, resolveToolAccessRules, type ToolAccessRule } from "./tool-access.ts";
+import { evaluateToolAccess } from "./tool-access.ts";
 import { formatPreloadedSkills, resolvePreloadedSkills } from "./skills.ts";
 import { createDelegateToolResult, resultError, type DelegateCmdResult } from "./result.ts";
 import { oneLine } from "./text.ts";
@@ -27,8 +27,7 @@ const extensionSourcePath = fileURLToPath(import.meta.url);
 const DelegateCmdParams = Type.Object({
 	title: Type.String({ minLength: 1, description: "Short task description; prefer imperative form" }),
 	input: Type.String({ minLength: 1, description: "The task to delegate or a response in a dialog" }),
-	skills: Type.Optional(Type.Array(Type.String({}), { description: "Skills to pre-load into a new child session" })),
-	agentPreset: Type.Optional(Type.String({ description: "Agent preset for a new child session; defaults to `parent`" })),
+	agent: Type.Optional(Type.String({ description: "Agent definition for a new child session; required when opening" })),
 	continue_session: Type.Optional(Type.String({ description: "The ID of an existing child session to continue; omit or leave empty to start a new child session" })),
 });
 export type DelegateCmdParams = Static<typeof DelegateCmdParams>;
@@ -41,6 +40,7 @@ type RootSharedState = {
 	baseConfig?: { config: ExtensionConfig } | { error: unknown };
 	sources?: AgentSources;
 	snapshot?: AgentSnapshot;
+	skills?: readonly Skill[];
 };
 
 function createExtensionFactory(root: RootSharedState, registry: ChildRegistry, sourcePath: string, callerSubordinationLevel: number): (pi: ExtensionAPI) => void {
@@ -95,7 +95,9 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 			if (!root.snapshot) {
 				try {
 					// The full loaded skill list is exposed only after resource discovery.
-					root.snapshot = buildAgentSnapshot(captureRootSources(ctx), (event.systemPromptOptions.skills ?? []).map((skill) => skill.name));
+					const skills = event.systemPromptOptions.skills ?? [];
+					root.snapshot = buildAgentSnapshot(captureRootSources(ctx), skills.map((skill) => skill.name));
+					root.skills = [...skills];
 					for (const diagnostic of root.snapshot.diagnostics) {
 						const message = `Agent definition ${diagnostic.filename}: ${diagnostic.reason}`;
 						if (ctx.hasUI) ctx.ui.notify(message, "warning");
@@ -104,32 +106,7 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 				} catch (error) { reportConfigError(ctx, error); }
 			}
 		}
-		const delegateToolActive = event.systemPromptOptions.selectedTools?.includes("delegate") ?? false;
-		if (!delegateToolActive && subordinationLevel === 0) return;
-		let config;
-		try {
-			config = getBaseConfig();
-		} catch (error) {
-			reportConfigError(ctx, error);
-			config = { agentPresets: {} };
-		}
-		const promptSections: string[] = [];
-		if (delegateToolActive && root.context && !root.closed) {
-			const rootContext = root.context;
-			const rootModel = rootContext.model ? { model: rootContext.model, thinkingLevel: rootContext.thinkingLevel } : undefined;
-			const { names, diagnostics } = getAgentPresetAvailability(config, ctx, rootModel, rootContext.modelRegistry);
-			if (ctx.hasUI) {
-				for (const diagnostic of diagnostics) {
-					if (notifiedConfigurationWarnings.has(diagnostic)) continue;
-					notifiedConfigurationWarnings.add(diagnostic);
-					ctx.ui.notify(`Could not resolve a configured agent preset: ${diagnostic}`, "warning");
-				}
-			}
-			promptSections.push(formatAvailableAgentPresets(names, config));
-		}
-		if (subordinationLevel > 0 && config.subagentPreamble) promptSections.push(config.subagentPreamble);
-		if (promptSections.length === 0) return;
-		return { systemPrompt: `${event.systemPrompt}\n\n${promptSections.join("\n\n")}` };
+
 	});
 	pi.registerTool({
 		name: "delegate",
@@ -138,7 +115,7 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 		promptSnippet: "Delegate a task to a subagent in a new or existing child session",
 		promptGuidelines: [
 			"Specify `title` and `input` always",
-			"Optionally, specify `agentPreset` and `skills` when starting a new child session",
+			"Specify `agent` when starting a new child session; omit it for continuations",
 			"When a task can benefit from the pre-populated context in an existing child session, use `continue_session` with the child session ID returned by a previous delegation request; omit it or leave it empty when starting a new child session.",
 		],
 		parameters: DelegateCmdParams,
@@ -148,7 +125,7 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 			const continuationId = args.continue_session?.trim();
 			const summary = continuationId
 				? `continue ${oneLine(continuationId)}${title}`
-				: `${oneLine(args.agentPreset?.trim() || "parent")}${args.skills?.length ? ` + ${args.skills.map(oneLine).join(", ")}` : ""}${title}`;
+				: `${oneLine(args.agent?.trim() || "(agent required)")}${title}`;
 			text.setText(`${theme.fg("toolTitle", theme.bold("delegate"))} ${theme.fg("muted", summary)}`);
 			return text;
 		},
@@ -157,10 +134,11 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 			if (root.closed || !root.context) return createDelegateToolResult(resultError("failed", "The root session is unavailable."));
 			if (!params.title.trim()) return createDelegateToolResult(resultError("failed", "`title` must be a non-empty string."));
 			if (!params.input.trim()) return createDelegateToolResult(resultError("failed", "`input` must be a non-empty string."));
+			if (Object.hasOwn(params, "agentPreset") || Object.hasOwn(params, "skills")) return createDelegateToolResult(resultError("failed", "`agentPreset` and caller-supplied `skills` are no longer supported; configure an agent definition and use `agent` when opening."));
 			const abortSignal = signal ?? new AbortController().signal;
 			const continuationId = params.continue_session?.trim();
 			if (continuationId) {
-				if (params.agentPreset !== undefined || params.skills !== undefined) return createDelegateToolResult(resultError("failed", "Do not specify `agentPreset` or `skills` when continuing an existing child session."));
+				if (params.agent !== undefined) return createDelegateToolResult(resultError("failed", "Do not specify `agent` when continuing an existing child session."));
 				const child = registry.get(continuationId);
 				if (!child || child.cwd !== ctx.cwd) return createDelegateToolResult(resultError("failed", "Session ID is unknown, expired, or cwd-mismatched. Use a valid child session ID returned by a previous delegation request, or omit `continue_session` (or leave it empty) to start a new child session."));
 				const result = await child.queue.enqueue({ input: params.input, signal: abortSignal, onUpdate, theme: ctx.ui.theme });
@@ -171,11 +149,16 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 			const rootContext = root.context;
 			const rootModel = rootContext.model ? { model: rootContext.model, thinkingLevel: rootContext.thinkingLevel } : undefined;
 			let resolvedModel: ModelSettings;
-			let toolRules: ToolAccessRule[];
+			let definition: AgentSnapshot["definitions"][number];
 			try {
 				const config = getBaseConfig();
-				resolvedModel = resolveAgentPreset(params.agentPreset, config, ctx, rootModel, rootContext.modelRegistry);
-				toolRules = resolveToolAccessRules(params.agentPreset, config);
+				const name = params.agent?.trim();
+				if (!name) throw new Error("`agent` is required when opening a child session.");
+				if (!root.snapshot || !root.skills) throw new Error("The agent snapshot is not yet validated against the full skill catalog; wait for the root session to start its first turn.");
+				const found = root.snapshot.definitions.find((agent) => agent.name === name);
+				if (!found) throw new Error(`Unknown agent ${JSON.stringify(name)}.`);
+				definition = found;
+				resolvedModel = resolveAgentModel(definition, config, ctx, rootModel, rootContext.modelRegistry);
 			} catch (error) {
 				return createDelegateToolResult(resultError("failed", error instanceof Error ? error.message : String(error)));
 			}
@@ -184,7 +167,9 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 			let createdSession: AgentSession | undefined;
 			try {
 				const setup = (async () => {
-					let preloadedSkills: Skill[] = [];
+					// The root catalog includes hidden and extension-provided skills, which may
+					// not yet be present during a child resource loader's initial reload.
+					const preloadedSkills = resolvePreloadedSkills(root.skills!, definition.skills.preload);
 					const resourceLoader = new DefaultResourceLoader({
 						cwd: ctx.cwd,
 						agentDir: getAgentDir(),
@@ -192,13 +177,12 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 						extensionFactories: [{ name: "pi-subagent", factory: createExtensionFactory(root, nestedRegistry, sourcePath, subordinationLevel), hidden: true }],
 						noPromptTemplates: true,
 						noThemes: true,
-						skillsOverride: (current) => { preloadedSkills = resolvePreloadedSkills(current.skills, params.skills); return current; },
-						appendSystemPromptOverride: (current) => preloadedSkills.length ? [...current, formatPreloadedSkills(preloadedSkills)] : current,
+						appendSystemPromptOverride: (current) => [...current, ...(definition.prompt.trim() ? [definition.prompt] : []), ...(preloadedSkills.length ? [formatPreloadedSkills(preloadedSkills)] : [])],
 					});
 					await resourceLoader.reload();
 					if (registry.isClosed()) throw new Error("The extension runtime is shutting down.");
 					const { session } = await createAgentSession({ cwd: ctx.cwd, model: resolvedModel.model, thinkingLevel: resolvedModel.thinkingLevel, resourceLoader, sessionManager: SessionManager.inMemory(ctx.cwd) });
-					if (toolRules.length > 0) session.setActiveToolsByName(evaluateToolAccess(toolRules, session.getAllTools().map((tool) => tool.name)));
+					if (definition.tools.length > 0) session.setActiveToolsByName(evaluateToolAccess(definition.tools, session.getAllTools().map((tool) => tool.name)));
 					createdSession = session;
 					if (registry.isClosed()) { session.dispose(); createdSession = undefined; throw new Error("The extension runtime is shutting down."); }
 					child = { session, cwd: ctx.cwd, nestedRegistry, queue: undefined as never };

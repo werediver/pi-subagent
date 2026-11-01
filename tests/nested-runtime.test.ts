@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CONFIG_DIR_NAME, ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, ModelRegistry, ModelRuntime, type Skill } from "@earendil-works/pi-coding-agent";
 import { createExtensionHarness, fakeContext } from "./extension-harness.ts";
 import type { DelegateCmdResult } from "../src/result.ts";
 
@@ -37,30 +37,30 @@ export default function (pi) {
       stream.push({ type: "start", partial: message });
       const prompt = users.at(-1);
       let args;
-      if (prompt === "child initial" && turnResults.length === 0) args = { title: "Grandchild", input: "grandchild prompt" };
+      if (prompt === "child initial" && turnResults.length === 0) args = { title: "Grandchild", input: "grandchild prompt", agent: "grandchild" };
       if (prompt === "child continuation") {
         const grandchildId = results[0]?.details?.sessionId;
         const calls = [
           { title: "Resume grandchild", input: "grandchild continuation", continue_session: grandchildId },
-          { title: "Child main", input: "child main leaf", agentPreset: "main" },
-          { title: "Child dynamic", input: "child dynamic leaf", agentPreset: "dynamic" },
-          { title: "Child parent", input: "child parent leaf", agentPreset: "parent" },
+          { title: "Child main", input: "child main leaf", agent: "main" },
+          { title: "Child dynamic", input: "child dynamic leaf", agent: "dynamic" },
+          { title: "Child parent", input: "child parent leaf", agent: "parent" },
         ];
         args = calls[turnResults.length];
       }
       if (prompt === "grandchild continuation") {
         const calls = [
-          { title: "Grandchild main", input: "grandchild main leaf", agentPreset: "main" },
-          { title: "Grandchild dynamic", input: "grandchild dynamic leaf", agentPreset: "dynamic" },
-          { title: "Grandchild parent", input: "grandchild parent leaf", agentPreset: "parent" },
+          { title: "Grandchild main", input: "grandchild main leaf", agent: "main" },
+          { title: "Grandchild dynamic", input: "grandchild dynamic leaf", agent: "dynamic" },
+          { title: "Grandchild parent", input: "grandchild parent leaf", agent: "parent" },
         ];
         args = calls[turnResults.length];
       }
       if (prompt === "no root model") {
         const calls = [
-          { title: "Missing provider", input: "must not run dynamic", agentPreset: "dynamic" },
-          { title: "Missing main", input: "must not run main", agentPreset: "main" },
-          { title: "Still parent", input: "no root parent leaf", agentPreset: "parent" },
+          { title: "Missing provider", input: "must not run dynamic", agent: "dynamic" },
+          { title: "Missing main", input: "must not run main", agent: "main" },
+          { title: "Still parent", input: "no root parent leaf", agent: "parent" },
         ];
         args = calls[turnResults.length];
       }
@@ -95,13 +95,30 @@ test("nested sessions share the root config snapshot while models remain live, u
 	const logPath = join(rootDir, "provider.jsonl");
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	mkdirSync(join(project, CONFIG_DIR_NAME), { recursive: true });
-	mkdirSync(agentDir);
+	mkdirSync(join(agentDir, "agents"), { recursive: true });
+	const skillDir = join(agentDir, "skills", "nested-check");
+	mkdirSync(skillDir, { recursive: true });
+	const skillPath = join(skillDir, "SKILL.md");
+	writeFileSync(skillPath, "---\nname: nested-check\ndescription: Nested test skill\n---\nNESTED-SKILL-BODY\n");
+	// The fake root context does not run resource discovery; provide its catalog
+	// explicitly. The hidden skill is outside both discovery roots, as if supplied
+	// only by a root extension; a child's initial loader cannot discover it.
+	const rootOnlyDir = join(rootDir, "root-only-skill");
+	mkdirSync(rootOnlyDir, { recursive: true });
+	const rootOnlyPath = join(rootOnlyDir, "SKILL.md");
+	writeFileSync(rootOnlyPath, "---\nname: root-only\ndescription: Hidden root-only skill\ndisable-model-invocation: true\n---\nROOT-ONLY-SKILL-BODY\n");
+	const rootSkills = [
+		{ name: "nested-check", filePath: skillPath, baseDir: skillDir },
+		{ name: "root-only", filePath: rootOnlyPath, baseDir: rootOnlyDir, disableModelInvocation: true },
+	] as Skill[];
+	const putAgent = (name: string, frontmatter: string, body: string) => writeFileSync(join(agentDir, "agents", `${name}.md`), `---\nname: ${name}\n${frontmatter}---\n${body}\n`);
+	const nestedRules = "tools:\n  '*': false\n  read: true\n  delegate: true\n  bash: false\nskills:\n  preload: [nested-check]\n";
+	const leafRules = "tools:\n  '*': false\n  read: true\n  bash: false\n";
+	putAgent("child", nestedRules.replace("preload: [nested-check]", "preload: [nested-check, root-only]"), "AGENT-BODY-CHILD");
+	putAgent("grandchild", `model: parent\n${nestedRules}`, "AGENT-BODY-GRANDCHILD");
+	for (const name of ["main", "dynamic", "parent"]) putAgent(name, `model: ${name}\n${leafRules}`, `${name.toUpperCase()}-AGENT-BODY`);
 	writeFileSync(join(agentDir, "subagent.json"), JSON.stringify({
-		subagentPreamble: "NESTED-PREAMBLE-MARKER",
-		agentPresets: {
-			observer: { base: "parent", description: "Observer preset marker" },
-			dynamic: { model: "switch-target", description: "Dynamic preset marker", thinkingLevel: "medium" },
-		},
+		agentPresets: { dynamic: { model: "switch-target", thinkingLevel: "medium" } },
 	}));
 	writeFakeProvider(agentDir, logPath);
 	process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -126,12 +143,18 @@ test("nested sessions share the root config snapshot while models remain live, u
 		const model = registry.find("nested-test", "nested-model");
 		assert.ok(model);
 		Object.assign(ctx, { model, modelRegistry: registry });
-		const rootPrompt = harness.beforeStart(ctx, ["delegate"])?.systemPrompt;
-		assert.match(rootPrompt!, /Observer preset marker/);
-		assert.doesNotMatch(rootPrompt!, /NESTED-PREAMBLE-MARKER|Dynamic preset marker/);
+		// Build the static snapshot. Agent digests are deliberately not asserted:
+		// they are implemented in Phase 4, not the invocation migration.
+		harness.beforeStart(ctx, ["delegate"], "base prompt", rootSkills);
+		const missingAgent = (await harness.execute(ctx, { title: "Missing agent", input: "must not run" })).details as DelegateCmdResult;
+		assert.equal(missingAgent.status, "failed");
+		assert.match(missingAgent.error!, /agent/i);
+		const unknownAgent = (await harness.execute(ctx, { title: "Unknown agent", input: "must not run", agent: "unknown" })).details as DelegateCmdResult;
+		assert.equal(unknownAgent.status, "failed");
+		assert.match(unknownAgent.error!, /unknown.*agent|agent.*unknown/i);
 		const records = () => readFileSync(logPath, "utf8").trim().split("\n").map(line => JSON.parse(line));
 		const requests = () => records().filter(r => r.type === "request");
-		const initial = (await harness.execute(ctx, { title: "Child", input: "child initial" })).details as DelegateCmdResult;
+		const initial = (await harness.execute(ctx, { title: "Child", input: "child initial", agent: "child" })).details as DelegateCmdResult;
 		assert.equal(initial.status, "completed", JSON.stringify(initial));
 		assert.ok(initial.sessionId);
 		assert.equal(initial.text, "child answer");
@@ -140,38 +163,44 @@ test("nested sessions share the root config snapshot while models remain live, u
 		for (const request of [child, grandchild]) {
 			assert.equal(request.provider, "nested-test");
 			assert.equal(request.model, "nested-model");
-			assert.match(request.systemPrompt, /NESTED-PREAMBLE-MARKER/);
-			assert.match(request.systemPrompt, /Observer preset marker/);
-			assert.match(request.systemPrompt, /The main session model/);
-			assert.doesNotMatch(request.systemPrompt, /Dynamic preset marker/);
+			assert.match(request.systemPrompt, /NESTED-SKILL-BODY/);
 			assert.ok(request.tools.includes("delegate"));
+			assert.ok(request.tools.includes("read"));
+			assert.ok(!request.tools.includes("bash"));
+			assert.ok(!request.tools.includes("write"));
 		}
+		assert.match(child.systemPrompt, /AGENT-BODY-CHILD/);
+		assert.match(child.systemPrompt, /ROOT-ONLY-SKILL-BODY/);
+		assert.match(childAfterTool.systemPrompt, /ROOT-ONLY-SKILL-BODY/);
+		assert.doesNotMatch(child.systemPrompt, /AGENT-BODY-GRANDCHILD/);
+		assert.match(grandchild.systemPrompt, /AGENT-BODY-GRANDCHILD/);
+		assert.doesNotMatch(grandchild.systemPrompt, /AGENT-BODY-CHILD|ROOT-ONLY-SKILL-BODY/);
 		assert.deepEqual(grandchild.users, ["grandchild prompt"]);
 		assert.equal(childAfterTool.results[0].isError, false);
 		const grandchildId = childAfterTool.results[0].details?.sessionId;
 		assert.ok(grandchildId);
 		assert.notEqual(grandchildId, initial.sessionId);
+		const invalidContinuation = (await harness.execute(ctx, { title: "Invalid continuation", input: "must not run", agent: "child", continue_session: initial.sessionId })).details as DelegateCmdResult;
+		assert.equal(invalidContinuation.status, "failed");
+		assert.match(invalidContinuation.error!, /agent/i);
 
-		// The first beforeStart established the snapshot. Make the on-disk config
-		// observably different before creating any more descendants or continuing.
+		// Change both the agent definition and preset after snapshot creation. The
+		// replacement child disables delegate, making continuation reuse observable.
+		putAgent("child", leafRules, "RELOADED-CHILD-BODY");
+		putAgent("dynamic", `model: dynamic\n${leafRules}`, "RELOADED-DYNAMIC-BODY");
 		writeFileSync(join(agentDir, "subagent.json"), JSON.stringify({
-			subagentPreamble: "RELOADED-PREAMBLE-MARKER",
-			agentPresets: {
-				observer: { base: "parent", description: "Reloaded observer marker" },
-				dynamic: { model: "alternate-model", description: "Reloaded dynamic marker", thinkingLevel: "low" },
-			},
+			agentPresets: { dynamic: { model: "alternate-model", thinkingLevel: "low" } },
 		}));
-		const afterEdit = (await harness.execute(ctx, { title: "New after edit", input: "new after edit" })).details as DelegateCmdResult;
+		const afterEdit = (await harness.execute(ctx, { title: "New after edit", input: "new after edit", agent: "child" })).details as DelegateCmdResult;
 		assert.equal(afterEdit.status, "completed", JSON.stringify(afterEdit));
 		assert.ok(afterEdit.sessionId);
 		const newChild = requests().find(r => r.users.at(-1) === "new after edit");
 		assert.ok(newChild);
-		assert.match(newChild.systemPrompt, /NESTED-PREAMBLE-MARKER/);
-		assert.match(newChild.systemPrompt, /Observer preset marker/);
-		assert.doesNotMatch(newChild.systemPrompt, /RELOADED-PREAMBLE-MARKER|Reloaded observer marker/);
-		const originalRootPrompt = harness.beforeStart(ctx, ["delegate"])?.systemPrompt;
-		assert.match(originalRootPrompt!, /Observer preset marker/);
-		assert.doesNotMatch(originalRootPrompt!, /Reloaded observer marker/);
+		assert.match(newChild.systemPrompt, /AGENT-BODY-CHILD/);
+		assert.match(newChild.systemPrompt, /NESTED-SKILL-BODY/);
+		assert.match(newChild.systemPrompt, /ROOT-ONLY-SKILL-BODY/);
+		assert.doesNotMatch(newChild.systemPrompt, /RELOADED-CHILD-BODY/);
+		assert.ok(newChild.tools.includes("delegate"));
 
 		// Mutate the very same root context after both nested sessions exist.
 		const alternate = registry.find("alternate-test", "alternate-model");
@@ -189,11 +218,15 @@ test("nested sessions share the root config snapshot while models remain live, u
 			assert.equal(runs[0].provider, "nested-test");
 			assert.equal(runs[0].model, "nested-model");
 			assert.deepEqual(runs[0].users, prompt === "child continuation" ? ["child initial", prompt] : ["grandchild prompt", prompt]);
-			assert.match(runs[0].systemPrompt, /The main session model/);
-			assert.match(runs[0].systemPrompt, /Dynamic preset marker/);
-			assert.match(runs[0].systemPrompt, /Observer preset marker/);
-			assert.match(runs[0].systemPrompt, /NESTED-PREAMBLE-MARKER/);
-			assert.doesNotMatch(runs[0].systemPrompt, /RELOADED-PREAMBLE-MARKER|Reloaded observer marker|Reloaded dynamic marker/);
+			assert.match(runs[0].systemPrompt, prompt === "child continuation" ? /AGENT-BODY-CHILD/ : /AGENT-BODY-GRANDCHILD/);
+			assert.match(runs[0].systemPrompt, /NESTED-SKILL-BODY/);
+			for (const run of runs) {
+				if (prompt === "child continuation") assert.match(run.systemPrompt, /ROOT-ONLY-SKILL-BODY/);
+				else assert.doesNotMatch(run.systemPrompt, /ROOT-ONLY-SKILL-BODY/);
+			}
+			assert.doesNotMatch(runs[0].systemPrompt, /RELOADED-CHILD-BODY|RELOADED-DYNAMIC-BODY/);
+			assert.ok(runs[0].tools.includes("delegate"));
+			assert.ok(!runs[0].tools.includes("bash"));
 			const final = runs.at(-1);
 			assert.equal(final.turnResults.length, prompt === "child continuation" ? 4 : 3);
 			assert.ok(final.turnResults.every((result: { isError: boolean }) => !result.isError), JSON.stringify(final.turnResults));
@@ -211,10 +244,11 @@ test("nested sessions share the root config snapshot while models remain live, u
 				assert.equal(leaf[0].provider, provider);
 				assert.equal(leaf[0].model, modelId);
 				assert.equal(leaf[0].reasoning, reasoning);
-				assert.match(leaf[0].systemPrompt, /NESTED-PREAMBLE-MARKER/);
-				assert.match(leaf[0].systemPrompt, /Observer preset marker/);
-				assert.match(leaf[0].systemPrompt, /Dynamic preset marker/);
-				assert.doesNotMatch(leaf[0].systemPrompt, /RELOADED-PREAMBLE-MARKER|Reloaded observer marker|Reloaded dynamic marker/);
+				assert.match(leaf[0].systemPrompt, new RegExp(`${preset.toUpperCase()}-AGENT-BODY`));
+				assert.doesNotMatch(leaf[0].systemPrompt, /RELOADED-DYNAMIC-BODY|AGENT-BODY-CHILD|AGENT-BODY-GRANDCHILD|NESTED-SKILL-BODY|ROOT-ONLY-SKILL-BODY/);
+				assert.ok(leaf[0].tools.includes("read"));
+				assert.ok(!leaf[0].tools.includes("delegate"));
+				assert.ok(!leaf[0].tools.includes("bash"));
 			}
 		}
 
@@ -223,8 +257,9 @@ test("nested sessions share the root config snapshot while models remain live, u
 		const missing = (await harness.execute(ctx, { title: "No root", input: "no root model", continue_session: initial.sessionId })).details as DelegateCmdResult;
 		assert.equal(missing.status, "completed", JSON.stringify(missing));
 		const noRootRuns = byPrompt("no root model");
-		assert.doesNotMatch(noRootRuns[0].systemPrompt, /Dynamic preset marker|The main session model/);
-		assert.match(noRootRuns[0].systemPrompt, /Observer preset marker/);
+		assert.match(noRootRuns[0].systemPrompt, /AGENT-BODY-CHILD/);
+		assert.match(noRootRuns[0].systemPrompt, /NESTED-SKILL-BODY/);
+		assert.match(noRootRuns[0].systemPrompt, /ROOT-ONLY-SKILL-BODY/);
 		const noRootResults = noRootRuns.at(-1).turnResults;
 		assert.equal(noRootResults.length, 3);
 		assert.equal(noRootResults[0].isError, true);
@@ -244,14 +279,11 @@ test("nested sessions share the root config snapshot while models remain live, u
 		assert.match(closed.error!, /root session is unavailable/i);
 		Object.assign(ctx, { model: alternate, thinkingLevel: "high" });
 		reloadedHarness = createExtensionHarness();
-		const reloadedPrompt = reloadedHarness.beforeStart(ctx, ["delegate"])?.systemPrompt;
-		assert.match(reloadedPrompt!, /Reloaded observer marker/);
-		assert.match(reloadedPrompt!, /Reloaded dynamic marker/);
-		assert.doesNotMatch(reloadedPrompt!, /Observer preset marker|Dynamic preset marker/);
+		reloadedHarness.beforeStart(ctx, ["delegate"], "base prompt", rootSkills);
 		const stale = (await reloadedHarness.execute(ctx, { title: "Old ID", input: "stale", continue_session: initial.sessionId })).details as DelegateCmdResult;
 		assert.equal(stale.status, "failed");
 		assert.match(stale.error!, /unknown, expired, or cwd-mismatched/);
-		const fresh = (await reloadedHarness.execute(ctx, { title: "Reloaded", input: "reload leaf", agentPreset: "dynamic" })).details as DelegateCmdResult;
+		const fresh = (await reloadedHarness.execute(ctx, { title: "Reloaded", input: "reload leaf", agent: "dynamic" })).details as DelegateCmdResult;
 		assert.equal(fresh.status, "completed", JSON.stringify(fresh));
 		assert.ok(fresh.sessionId);
 		assert.notEqual(fresh.sessionId, initial.sessionId);
@@ -260,10 +292,15 @@ test("nested sessions share the root config snapshot while models remain live, u
 		assert.equal(reloadedLeaf[0].provider, "alternate-test");
 		assert.equal(reloadedLeaf[0].model, "alternate-model");
 		assert.equal(reloadedLeaf[0].reasoning, "low");
-		assert.match(reloadedLeaf[0].systemPrompt, /RELOADED-PREAMBLE-MARKER/);
-		assert.match(reloadedLeaf[0].systemPrompt, /Reloaded observer marker/);
-		assert.match(reloadedLeaf[0].systemPrompt, /Reloaded dynamic marker/);
-		assert.doesNotMatch(reloadedLeaf[0].systemPrompt, /NESTED-PREAMBLE-MARKER|Observer preset marker|Dynamic preset marker/);
+		assert.match(reloadedLeaf[0].systemPrompt, /RELOADED-DYNAMIC-BODY/);
+		assert.doesNotMatch(reloadedLeaf[0].systemPrompt, /DYNAMIC-AGENT-BODY|NESTED-SKILL-BODY|ROOT-ONLY-SKILL-BODY/);
+		assert.ok(!reloadedLeaf[0].tools.includes("delegate"));
+		const freshChild = (await reloadedHarness.execute(ctx, { title: "Reloaded child", input: "reload child", agent: "child" })).details as DelegateCmdResult;
+		assert.equal(freshChild.status, "completed", JSON.stringify(freshChild));
+		const reloadedChild = byPrompt("reload child")[0];
+		assert.match(reloadedChild.systemPrompt, /RELOADED-CHILD-BODY/);
+		assert.doesNotMatch(reloadedChild.systemPrompt, /AGENT-BODY-CHILD|NESTED-SKILL-BODY|ROOT-ONLY-SKILL-BODY/);
+		assert.ok(!reloadedChild.tools.includes("delegate"));
 	} finally {
 		if (reloadedHarness) await reloadedHarness.emit("session_shutdown", { type: "session_shutdown" }, ctx);
 		await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx);
