@@ -12,7 +12,7 @@ export type ChildSession = {
 
 export class ChildRegistry {
 	private readonly children = new Map<string, ChildSession>();
-	private readonly setups = new Set<Promise<unknown>>();
+	private readonly openings = new Set<Promise<unknown>>();
 	private closed = false;
 	private closing: Promise<void> | undefined;
 
@@ -25,18 +25,26 @@ export class ChildRegistry {
 	remove(id: string, child: ChildSession): void {
 		if (this.children.get(id) === child) this.children.delete(id);
 	}
-	trackSetup<T>(setup: Promise<T>): Promise<T> {
-		this.setups.add(setup);
-		return setup.finally(() => this.setups.delete(setup));
+	trackOpening<T>(opening: () => Promise<T>): Promise<T> {
+		if (this.closed) return Promise.reject(new Error("The extension runtime is shutting down."));
+		let tracked!: Promise<T>;
+		// Defer invoking the operation until after it is registered for shutdown.
+		tracked = Promise.resolve().then(opening).finally(() => this.openings.delete(tracked));
+		this.openings.add(tracked);
+		return tracked;
 	}
 	async close(): Promise<void> {
 		if (this.closing) return this.closing;
 		this.closed = true;
 		this.closing = (async () => {
-			const results = await Promise.allSettled([...this.children.values()].map((child) => disposeChild(child)));
-			await Promise.allSettled([...this.setups]);
+			const childDisposals = [...this.children.values()].map((child) => disposeChild(child));
+			const openings = [...this.openings];
+			const [childResults, openingResults] = await Promise.all([
+				Promise.allSettled(childDisposals),
+				Promise.allSettled(openings),
+			]);
 			this.children.clear();
-			const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+			const failures = [...childResults, ...openingResults].filter((result): result is PromiseRejectedResult => result.status === "rejected");
 			if (failures.length) throw new AggregateError(failures.map((result) => result.reason), "Could not close all child sessions.");
 		})();
 		return this.closing;

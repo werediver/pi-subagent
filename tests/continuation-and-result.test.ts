@@ -304,18 +304,73 @@ test("cleanup continues through a failing descendant shutdown", async () => {
 	assert.equal(registry.get("parent"), undefined);
 });
 
-test("registry shutdown waits for tracked setups even when they reject", async () => {
+test("registry shutdown waits for an opening's failure cleanup", async () => {
 	const registry = new ChildRegistry();
 	const setup = deferred<void>();
-	const tracked = registry.trackSetup(setup.promise);
-	const rejected = assert.rejects(tracked, /setup failed/);
+	const cleanup = deferred<void>();
+	const openingStarted = deferred<void>();
+	const cleanupStarted = deferred<void>();
+	let cleanupFinished = false;
+	const opening = registry.trackOpening(async () => {
+		openingStarted.resolve(undefined);
+		try {
+			await setup.promise;
+			throw new Error("setup failed");
+		} catch (error) {
+			cleanupStarted.resolve(undefined);
+			await cleanup.promise;
+			cleanupFinished = true;
+			throw error;
+		}
+	});
+	const openingRejected = assert.rejects(opening, /setup failed/);
+	await openingStarted.promise;
 	let closed = false;
-	const closing = registry.close().then(() => { closed = true; });
+	const closing = registry.close();
+	const closingRejected = assert.rejects(closing, /Could not close all child sessions/).finally(() => { closed = true; });
 	assert.equal(registry.isClosed(), true);
+	setup.resolve(undefined);
+	await cleanupStarted.promise;
 	await Promise.resolve();
 	assert.equal(closed, false);
-	setup.reject(new Error("setup failed"));
-	await rejected;
-	await closing;
+	assert.equal(cleanupFinished, false);
+	cleanup.resolve(undefined);
+	await Promise.all([openingRejected, closingRejected]);
 	assert.equal(closed, true);
+	assert.equal(cleanupFinished, true);
+	let invokedAfterClose = false;
+	await assert.rejects(registry.trackOpening(async () => { invokedAfterClose = true; }), /shutting down/);
+	assert.equal(invokedAfterClose, false);
+});
+
+test("registry close aborts and disposes a child while its opening operation settles", async () => {
+	const events: string[] = [];
+	const registry = new ChildRegistry();
+	const registered = deferred<void>();
+	const active = deferred<DelegateCmdResult>();
+	const childSession = session(async () => {
+		events.push("abort:opening");
+		active.resolve(resultError("cancelled", "closed"));
+	}, () => { events.push("dispose:opening"); }, "opening");
+	const child: ChildSession = {
+		session: childSession, cwd: "/",
+		queue: new ContinuationQueue(childSession, () => active.promise),
+		nestedRegistry: new ChildRegistry(),
+		shutdown: async () => { events.push("shutdown:opening"); },
+	};
+	const opening = registry.trackOpening(async () => {
+		registry.add(child);
+		registered.resolve(undefined);
+		const result = await child.queue.startInitial(request("initial"), Symbol("opening-turn"));
+		if (result.status !== "completed") {
+			registry.remove(child.session.sessionId, child);
+			await disposeChild(child);
+		}
+		return result;
+	});
+	await registered.promise;
+	const closing = registry.close();
+	const [result] = await Promise.all([opening, closing]);
+	assert.deepEqual(result, resultError("cancelled", "closed"));
+	assert.deepEqual(events, ["abort:opening", "shutdown:opening", "dispose:opening"]);
 });
