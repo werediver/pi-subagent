@@ -141,19 +141,29 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 			const batch = activeTurnBatch ?? Symbol("delegate-unscoped-call");
 			if (subordinationLevel === 0 && !root.closed) root.context = ctx;
 			if (root.closed || !root.context) return createDelegateToolResult(resultError("failed", "The root session is unavailable."));
-			if (!params.title.trim()) return createDelegateToolResult(resultError("failed", "`title` must be a non-empty string."));
-			if (!params.input.trim()) return createDelegateToolResult(resultError("failed", "`input` must be a non-empty string."));
-			if (Object.hasOwn(params, "agentPreset") || Object.hasOwn(params, "skills")) return createDelegateToolResult(resultError("failed", "`agentPreset` and caller-supplied `skills` are no longer supported; configure an agent definition and use `agent` when opening."));
 			const abortSignal = signal ?? new AbortController().signal;
 			const continuationId = params.continue_session?.trim();
+			const getValidationError = (): string | undefined => {
+				if (!params.title.trim()) return "`title` must be a non-empty string.";
+				if (!params.input.trim()) return "`input` must be a non-empty string.";
+				if (Object.hasOwn(params, "agentPreset") || Object.hasOwn(params, "skills")) return "`agentPreset` and caller-supplied `skills` are no longer supported; configure an agent definition and use `agent` when opening.";
+				if (continuationId && params.agent !== undefined) return "Do not specify `agent` when continuing an existing child session.";
+				return undefined;
+			};
 			if (continuationId) {
-				if (params.agent !== undefined) return createDelegateToolResult(resultError("failed", "Do not specify `agent` when continuing an existing child session."));
 				const child = registry.get(continuationId);
 				if (!child || child.cwd !== ctx.cwd) return createDelegateToolResult(resultError("failed", "Session ID is unknown, expired, or cwd-mismatched. Use a valid child session ID returned by a previous delegation request, or omit `continue_session` (or leave it empty) to start a new child session."));
+				const validationError = getValidationError();
+				if (validationError) {
+					const failure = await child.queue.enqueueFailure(resultError("failed", validationError), abortSignal, batch);
+					return createDelegateToolResult(failure);
+				}
 				const result = await child.queue.enqueue({ input: params.input, signal: abortSignal, onUpdate, theme: ctx.ui.theme }, batch);
 				if (result.status === "completed") result.sessionId = continuationId;
 				return createDelegateToolResult(result);
 			}
+			const validationError = getValidationError();
+			if (validationError) return createDelegateToolResult(resultError("failed", validationError));
 
 			const rootContext = root.context;
 			const rootModel = rootContext.model ? { model: rootContext.model, thinkingLevel: rootContext.thinkingLevel } : undefined;

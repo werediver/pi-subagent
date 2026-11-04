@@ -181,9 +181,15 @@ test("nested sessions share the root config snapshot while models remain live, u
 		const grandchildId = childAfterTool.results[0].details?.sessionId;
 		assert.ok(grandchildId);
 		assert.notEqual(grandchildId, initial.sessionId);
+		await harness.emit("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() }, ctx);
 		const invalidContinuation = (await harness.execute(ctx, { title: "Invalid continuation", input: "must not run", agent: "child", continue_session: initial.sessionId })).details as DelegateCmdResult;
 		assert.equal(invalidContinuation.status, "failed");
 		assert.match(invalidContinuation.error!, /agent/i);
+		const afterInvalid = (await harness.execute(ctx, { title: "Valid but skipped", input: "must be skipped after invalid", continue_session: initial.sessionId })).details as DelegateCmdResult;
+		assert.equal(afterInvalid.status, "failed");
+		assert.match(afterInvalid.error!, /skipped because the previous continuation failed/i);
+		assert.equal(requests().some(r => r.users.at(-1) === "must be skipped after invalid"), false);
+		await harness.emit("turn_end", { type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, ctx);
 
 		// Change both the agent definition and preset after snapshot creation. The
 		// replacement child disables delegate, making continuation reuse observable.

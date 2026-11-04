@@ -214,7 +214,7 @@ test("opening requires a validated snapshot from the first turn", withSandbox(as
 	await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx);
 }));
 
-test("delegate validates agent selector for openings and continuations", withSandbox(async (project, agentDir) => {
+test("openings validate agent selectors and unknown continuation IDs fail immediately", withSandbox(async (project, agentDir) => {
 	writeAgent(agentDir, "worker.md", "---\nname: worker\n---\nBody");
 	const harness = createExtensionHarness();
 	const { ctx } = fakeContext(project);
@@ -232,8 +232,7 @@ test("delegate validates agent selector for openings and continuations", withSan
 	assert.match(failure(await harness.execute(ctx, { ...request, agent: "missing" })), /unknown agent/i);
 	for (const agent of ["worker", "", "  "]) {
 		const result = await harness.execute(ctx, { ...request, continue_session: "missing", agent });
-		assert.match(failure(result), /agent/i);
-		assert.doesNotMatch(failure(result), /session ID is unknown/i);
+		assert.match(failure(result), /session ID is unknown/i);
 	}
 	assert.match(failure(await harness.execute(ctx, { ...request, continue_session: "missing" })), /session ID is unknown/i);
 	await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx);

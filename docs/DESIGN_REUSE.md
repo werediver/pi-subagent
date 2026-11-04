@@ -14,7 +14,7 @@ Child sessions are retained in memory for the lifetime of the current extension 
 
 ## Continuation ordering
 
-Continuations of the same child session are serialized. When an assistant message issues multiple continuation tool calls, they run in assistant tool-call order; each call receives the result of its own task. A failed or cancelled request stops all later requests in that chain, including requests that were still queued. Those skipped calls receive individual agent-readable failure results. The child session itself remains available for a later, separately issued continuation.
+Continuations of the same child session that reach the extension queue are serialized. When an assistant message issues multiple such calls, they run in assistant tool-call order; each call receives its own result. A failed or cancelled queued request stops later requests in that batch, including requests that were still queued. Continuation validation failures for a known, same-cwd child are queued as well, so they stop later requests in the batch. Those skipped calls receive individual agent-readable failure results. This ordering guarantee does not cover calls Pi rejects or blocks before invoking the extension. The child session itself remains available for a later, separately issued continuation.
 
 Different child sessions may be processed concurrently.
 

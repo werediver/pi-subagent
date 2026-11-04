@@ -103,6 +103,59 @@ test("failure stays sticky after the queue empties until the turn changes", asyn
 	assert.deepEqual(calls, ["bad", "later turn"]);
 });
 
+test("an ordered failure marker sticks to its batch and later batches can reuse the queue", async () => {
+	const initialGate = deferred<DelegateCmdResult>();
+	const batch = Symbol("invalid-turn");
+	const laterBatch = Symbol("later-turn");
+	const calls: string[] = [];
+	const queue = new ContinuationQueue(session(), async (req) => {
+		calls.push(req.input);
+		return req.input === "initial" ? initialGate.promise : completed(req.input);
+	});
+	const initial = queue.startInitial(request("initial"), batch);
+	const invalid = resultError("failed", "invalid continuation");
+	let markerSettled = false;
+	const failureMarker = queue.enqueueFailure(invalid, new AbortController().signal, batch).then((result) => {
+		markerSettled = true;
+		return result;
+	});
+	const following = queue.enqueue(request("following"), batch);
+	await Promise.resolve();
+	assert.equal(markerSettled, false);
+	assert.deepEqual(calls, ["initial"]);
+
+	initialGate.resolve(completed("initial result"));
+	assert.deepEqual(await initial, completed("initial result"));
+	assert.deepEqual(await failureMarker, invalid);
+	const skipped = resultError("failed", "Continuation skipped because the previous continuation failed or was cancelled.");
+	assert.deepEqual(await following, skipped);
+	assert.deepEqual(await queue.enqueue(request("same batch after drain"), batch), skipped);
+	assert.deepEqual(await queue.enqueue(request("later batch"), laterBatch), completed("later batch"));
+	assert.deepEqual(calls, ["initial", "later batch"]);
+});
+
+test("a failure marker is skipped when an earlier same-batch request failed", async () => {
+	const batch = Symbol("failed-turn");
+	const laterBatch = Symbol("later-turn");
+	const queue = new ContinuationQueue(session(), async (req) => req.input === "bad"
+		? resultError("failed", "earlier failure")
+		: completed(req.input));
+	assert.deepEqual(await queue.enqueue(request("bad"), batch), resultError("failed", "earlier failure"));
+	assert.deepEqual(await queue.enqueueFailure(resultError("failed", "invalid continuation"), new AbortController().signal, batch), resultError("failed", "Continuation skipped because the previous continuation failed or was cancelled."));
+	assert.deepEqual(await queue.enqueue(request("later"), laterBatch), completed("later"));
+});
+
+test("failure markers honor abort and close", async () => {
+	const queue = new ContinuationQueue(session(), async (req) => completed(req.input));
+	const controller = new AbortController();
+	controller.abort();
+	const batch = Symbol("aborted-turn");
+	assert.deepEqual(await queue.enqueueFailure(resultError("failed", "invalid continuation"), controller.signal, batch), resultError("cancelled", "Continuation was cancelled while waiting."));
+	assert.deepEqual(await queue.enqueue(request("same turn"), batch), resultError("failed", "Continuation skipped because the previous continuation failed or was cancelled."));
+	await queue.close();
+	assert.deepEqual(await queue.enqueueFailure(resultError("failed", "invalid continuation"), new AbortController().signal, Symbol("closed-turn")), resultError("cancelled", "Child session was closed."));
+});
+
 test("a failed continuation skips later continuations but preserves the queue for reuse", async () => {
 	const gate = deferred<DelegateCmdResult>();
 	const started = deferred<void>();

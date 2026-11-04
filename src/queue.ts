@@ -19,17 +19,16 @@ export class ContinuationQueue {
 
 	constructor(private readonly session: AgentSession, private readonly run: (request: QueuedRequest) => Promise<DelegateCmdResult>) {}
 
-	private schedule(request: QueuedRequest, initial: boolean): Promise<DelegateCmdResult> {
+	private schedule(batch: symbol, signal: AbortSignal, initial: boolean, run: () => Promise<DelegateCmdResult> | DelegateCmdResult): Promise<DelegateCmdResult> {
 		const previous = this.tail;
-		const batch = request.batch;
 		const operation = (async () => {
 			if (!initial) await previous;
-			if (this.closed || request.signal.aborted) return resultError("cancelled", this.closed ? "Child session was closed." : "Continuation was cancelled while waiting.");
+			if (this.closed || signal.aborted) return resultError("cancelled", this.closed ? "Child session was closed." : "Continuation was cancelled while waiting.");
 			if (!initial && this.failedBatch === batch) return resultError("failed", "Continuation skipped because the previous continuation failed or was cancelled.");
-			return this.run(request);
+			return run();
 		})();
 		const result = operation
-			.catch((error) => resultError(request.signal.aborted ? "cancelled" : "failed", error instanceof Error ? error.message : String(error)))
+			.catch((error) => resultError(signal.aborted ? "cancelled" : "failed", error instanceof Error ? error.message : String(error)))
 			.then((value) => {
 				if (value.status !== "completed") this.failedBatch = batch;
 				return value;
@@ -39,11 +38,17 @@ export class ContinuationQueue {
 	}
 
 	startInitial(request: Omit<QueuedRequest, "batch">, batch: symbol): Promise<DelegateCmdResult> {
-		return this.schedule({ ...request, batch }, true);
+		const queued = { ...request, batch };
+		return this.schedule(batch, queued.signal, true, () => this.run(queued));
 	}
 
 	enqueue(request: Omit<QueuedRequest, "batch">, batch: symbol): Promise<DelegateCmdResult> {
-		return this.schedule({ ...request, batch }, false);
+		const queued = { ...request, batch };
+		return this.schedule(batch, queued.signal, false, () => this.run(queued));
+	}
+
+	enqueueFailure(failure: DelegateCmdResult, signal: AbortSignal, batch: symbol): Promise<DelegateCmdResult> {
+		return this.schedule(batch, signal, false, () => failure);
 	}
 
 	async close(): Promise<void> {
