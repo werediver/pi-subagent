@@ -259,10 +259,35 @@ test("registry removal is identity-safe and shutdown disposes nested children be
 	await Promise.all([registry.close(), registry.close(), disposeChild(parent)]);
 	assert.equal(registry.isClosed(), true);
 	assert.equal(registry.get("parent"), undefined);
-	assert.deepEqual(events, ["abort:nested", "dispose:nested", "abort:parent", "dispose:parent"]);
+	assert.deepEqual(events, ["abort:parent", "abort:nested", "dispose:nested", "dispose:parent"]);
 	assert.throws(() => registry.add(old), /shutting down/);
 	await disposeChild(parent);
 	assert.equal(events.length, 4);
+});
+
+test("parent abort starts promptly while descendant shutdown blocks final disposal", async () => {
+	const events: string[] = [];
+	const parentAborted = deferred<void>();
+	const nestedShutdownStarted = deferred<void>();
+	const releaseNestedShutdown = deferred<void>();
+	const parent = child("parent", events, async () => { parentAborted.resolve(undefined); });
+	const nested = child("nested", events);
+	parent.shutdown = async () => { events.push("shutdown:parent"); };
+	nested.shutdown = async () => {
+		events.push("shutdown:nested");
+		nestedShutdownStarted.resolve(undefined);
+		await releaseNestedShutdown.promise;
+	};
+	parent.nestedRegistry.add(nested);
+
+	const disposing = disposeChild(parent);
+	await parentAborted.promise;
+	await nestedShutdownStarted.promise;
+	assert.deepEqual(await parent.queue.enqueue(request("late work"), Symbol("shutdown-turn")), resultError("cancelled", "Child session was closed."));
+	assert.deepEqual(events, ["abort:parent", "abort:nested", "shutdown:nested"]);
+	releaseNestedShutdown.resolve(undefined);
+	await disposing;
+	assert.deepEqual(events, ["abort:parent", "abort:nested", "shutdown:nested", "dispose:nested", "shutdown:parent", "dispose:parent"]);
 });
 
 test("cleanup continues through a failing descendant shutdown", async () => {
@@ -275,7 +300,7 @@ test("cleanup continues through a failing descendant shutdown", async () => {
 	parent.nestedRegistry.add(nested);
 	registry.add(parent);
 	await assert.rejects(registry.close(), /Could not close all child sessions/);
-	assert.deepEqual(events, ["abort:nested", "shutdown:nested", "dispose:nested", "abort:parent", "shutdown:parent", "dispose:parent"]);
+	assert.deepEqual(events, ["abort:parent", "abort:nested", "shutdown:nested", "dispose:nested", "shutdown:parent", "dispose:parent"]);
 	assert.equal(registry.get("parent"), undefined);
 });
 

@@ -45,15 +45,17 @@ export class ChildRegistry {
 
 export async function disposeChild(child: ChildSession): Promise<void> {
 	if (child.cleanup) return child.cleanup;
-	child.cleanup = (async () => {
-		try { await child.nestedRegistry.close(); }
-		finally {
-			try { await child.queue.close(); }
-			finally {
-				try { await child.shutdown?.(); }
-				finally { child.session.dispose(); }
-			}
-		}
-	})();
+	// Defer teardown one microtask so concurrent/reentrant callers see the shared promise first.
+	child.cleanup = Promise.resolve().then(async () => {
+		// Closing the queue starts aborting this session. Start descendant teardown
+		// immediately too; either side may need the other to settle.
+		const closing = await Promise.allSettled([child.queue.close(), child.nestedRegistry.close()]);
+		const failures = closing.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+		try { await child.shutdown?.(); }
+		catch (error) { failures.push(error); }
+		try { child.session.dispose(); }
+		catch (error) { failures.push(error); }
+		if (failures.length) throw new AggregateError(failures, "Could not fully dispose a child session.");
+	});
 	return child.cleanup;
 }
