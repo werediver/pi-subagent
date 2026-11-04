@@ -4,9 +4,9 @@
 
 ## Request forms
 
-An opening delegation omits `continue_session` or specifies it as an empty string. It may specify `agentPreset` and `skills`; `agentPreset` defaults to `parent`.
+An opening delegation omits `continue_session` or specifies it as an empty string, and must name an `agent`. The selected definition is bound to the child session. See [Agent definitions](./DESIGN_DEF.md#invocation) for the invocation contract and agent configuration.
 
-A continuation delegation specifies `continue_session` with a previously returned session ID. It must not specify `agentPreset` or `skills`: the child’s existing configuration is reused. The `input` is appended as a new user turn. An unknown, expired, or cwd-mismatched ID fails the tool call.
+A continuation delegation specifies `continue_session` with a previously returned session ID. It must not specify `agent`: the child’s existing configuration is reused. The `input` is appended as a new user turn. An unknown, expired, or cwd-mismatched ID fails the tool call.
 
 ## Session lifetime
 
@@ -20,7 +20,7 @@ Different child sessions may be processed concurrently.
 
 ## Results
 
-Only a successfully completed request exposes the session ID. The agent-readable result uses an XML-like envelope:
+Only a successfully completed request exposes the session ID. The agent-readable result uses an XML-like envelope (with `text` present when the response contains text):
 
 ```xml
 <delegate_result>

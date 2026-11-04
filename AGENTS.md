@@ -2,7 +2,7 @@
 
 ## Extension design
 
-The extension design is described in [DESIGN.md](./docs/DESIGN.md), [DESIGN_REUSE.md](./docs/DESIGN_REUSE.md).
+The extension design is described in "./docs/DESIGN*.md" documents.
 
 ## Naming conventions
 
