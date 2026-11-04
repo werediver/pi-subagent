@@ -30,6 +30,7 @@ export default function (pi) {
       const lastUserIndex = context.messages.findLastIndex(m => m.role === "user");
       const turnResults = context.messages.slice(lastUserIndex + 1).filter(m => m.role === "toolResult");
       log({ type: "request", provider: model.provider, model: model.id, reasoning: options?.reasoning, systemPrompt: context.systemPrompt, users, results, turnResults, tools: (context.tools || []).map(t => t.name) });
+      if (users.at(-1) === "fail continuation") throw new Error("intentional continuation failure");
       const message = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id,
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
@@ -210,6 +211,24 @@ test("nested sessions share the root config snapshot while models remain live, u
 		assert.equal(continued.status, "completed", JSON.stringify(continued));
 		assert.equal(continued.sessionId, initial.sessionId);
 		assert.equal(continued.text, "child continuation answer");
+
+		// A later tool call in the same assistant turn remains in the failed batch,
+		// even though the first call has fully drained the child queue.
+		await harness.emit("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() }, ctx);
+		const failedContinuation = (await harness.execute(ctx, { title: "Fail", input: "fail continuation", continue_session: initial.sessionId })).details as DelegateCmdResult;
+		assert.equal(failedContinuation.status, "failed", JSON.stringify(failedContinuation));
+		const skippedContinuation = (await harness.execute(ctx, { title: "Skip", input: "skipped continuation", continue_session: initial.sessionId })).details as DelegateCmdResult;
+		assert.equal(skippedContinuation.status, "failed");
+		assert.match(skippedContinuation.error!, /skipped because the previous continuation failed/i);
+		assert.equal(requests().some(r => r.users.at(-1) === "skipped continuation"), false);
+		await harness.emit("turn_end", { type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, ctx);
+
+		// A distinct assistant turn gets a fresh batch and can reuse the child.
+		await harness.emit("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() }, ctx);
+		const laterContinuation = (await harness.execute(ctx, { title: "Reuse", input: "later continuation", continue_session: initial.sessionId })).details as DelegateCmdResult;
+		assert.equal(laterContinuation.status, "completed", JSON.stringify(laterContinuation));
+		assert.equal(laterContinuation.sessionId, initial.sessionId);
+		await harness.emit("turn_end", { type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, ctx);
 
 		const byPrompt = (prompt: string) => requests().filter(r => r.users.at(-1) === prompt);
 		for (const prompt of ["child continuation", "grandchild continuation"]) {

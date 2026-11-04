@@ -27,6 +27,7 @@ test("initial request starts immediately and continuations run in order with the
 	const first = deferred<DelegateCmdResult>();
 	const firstStarted = deferred<void>();
 	const secondStarted = deferred<void>();
+	const batch = Symbol("turn");
 	const calls: QueuedRequest[] = [];
 	const queue = new ContinuationQueue(session(), async (req) => {
 		calls.push(req);
@@ -35,9 +36,9 @@ test("initial request starts immediately and continuations run in order with the
 		secondStarted.resolve(undefined);
 		return completed(req.input);
 	});
-	const opening = queue.startInitial(request("initial"));
-	const continuation1 = queue.enqueue(request("first"));
-	const continuation2 = queue.enqueue(request("second"));
+	const opening = queue.startInitial(request("initial"), batch);
+	const continuation1 = queue.enqueue(request("first"), batch);
+	const continuation2 = queue.enqueue(request("second"), batch);
 	assert.deepEqual(calls.map(({ input }) => input), ["initial"]);
 	initial.resolve(completed("opening result"));
 	assert.deepEqual(await opening, completed("opening result"));
@@ -47,15 +48,16 @@ test("initial request starts immediately and continuations run in order with the
 	assert.deepEqual(await continuation1, completed("first result"));
 	await secondStarted.promise;
 	assert.deepEqual(await continuation2, completed("second"));
-	assert.deepEqual(calls.map(({ input, batch }) => [input, batch]), [["initial", 0], ["first", 0], ["second", 0]]);
+	assert.deepEqual(calls.map(({ input, batch: callBatch }) => [input, callBatch === batch]), [["initial", true], ["first", true], ["second", true]]);
 });
 
 test("different queues can run concurrently", async () => {
 	const blocked = deferred<DelegateCmdResult>();
+	const batch = Symbol("turn");
 	const one = new ContinuationQueue(session(), () => blocked.promise);
 	const two = new ContinuationQueue(session(), async (req) => completed(req.input));
-	const pending = one.startInitial(request("blocked"));
-	assert.deepEqual(await two.enqueue(request("independent")), completed("independent"));
+	const pending = one.startInitial(request("blocked"), batch);
+	assert.deepEqual(await two.enqueue(request("independent"), batch), completed("independent"));
 	blocked.resolve(completed("done"));
 	assert.deepEqual(await pending, completed("done"));
 });
@@ -64,14 +66,16 @@ test("failure or cancellation breaks the queued batch, but a later batch can run
 	for (const mode of ["failed", "cancelled", "throw-error", "throw-value"] as const) {
 		await t.test(mode, async () => {
 			const gate = deferred<DelegateCmdResult>();
-			const calls: Array<[string, number]> = [];
+			const failedTurn = Symbol("failed-turn");
+			const laterTurn = Symbol("later-turn");
+			const calls: Array<[string, symbol]> = [];
 			const queue = new ContinuationQueue(session(), async (req) => {
 				calls.push([req.input, req.batch]);
 				return req.input === "bad" ? gate.promise : completed(req.input);
 			});
-			const bad = queue.startInitial(request("bad"));
-			const skipped1 = queue.enqueue(request("skipped1"));
-			const skipped2 = queue.enqueue(request("skipped2"));
+			const bad = queue.startInitial(request("bad"), failedTurn);
+			const skipped1 = queue.enqueue(request("skipped1"), failedTurn);
+			const skipped2 = queue.enqueue(request("skipped2"), failedTurn);
 			if (mode === "throw-error") gate.reject(new Error("boom"));
 			else if (mode === "throw-value") gate.reject("boom");
 			else gate.resolve(resultError(mode, "boom"));
@@ -79,49 +83,67 @@ test("failure or cancellation breaks the queued batch, but a later batch can run
 			const skipped = resultError("failed", "Continuation skipped because the previous continuation failed or was cancelled.");
 			assert.deepEqual(await skipped1, skipped);
 			assert.deepEqual(await skipped2, skipped);
-			assert.deepEqual(await queue.enqueue(request("later")), completed("later"));
-			assert.deepEqual(calls, [["bad", 0], ["later", 1]]);
+			assert.deepEqual(await queue.enqueue(request("later"), laterTurn), completed("later"));
+			assert.deepEqual(calls, [["bad", failedTurn], ["later", laterTurn]]);
 		});
 	}
+});
+
+test("failure stays sticky after the queue empties until the turn changes", async () => {
+	const failedTurn = Symbol("failed-turn");
+	const laterTurn = Symbol("later-turn");
+	const calls: string[] = [];
+	const queue = new ContinuationQueue(session(), async (req) => {
+		calls.push(req.input);
+		return req.input === "bad" ? resultError("failed", "continuation failed") : completed(req.input);
+	});
+	assert.deepEqual(await queue.enqueue(request("bad"), failedTurn), resultError("failed", "continuation failed"));
+	assert.deepEqual(await queue.enqueue(request("same turn"), failedTurn), resultError("failed", "Continuation skipped because the previous continuation failed or was cancelled."));
+	assert.deepEqual(await queue.enqueue(request("later turn"), laterTurn), completed("later turn"));
+	assert.deepEqual(calls, ["bad", "later turn"]);
 });
 
 test("a failed continuation skips later continuations but preserves the queue for reuse", async () => {
 	const gate = deferred<DelegateCmdResult>();
 	const started = deferred<void>();
+	const batch = Symbol("failed-turn");
+	const laterBatch = Symbol("later-turn");
 	const calls: string[] = [];
 	const queue = new ContinuationQueue(session(), async (req) => {
 		calls.push(req.input);
 		if (req.input === "bad") { started.resolve(undefined); return gate.promise; }
 		return completed(req.input);
 	});
-	assert.deepEqual(await queue.startInitial(request("initial")), completed("initial"));
-	const bad = queue.enqueue(request("bad"));
-	const skipped = queue.enqueue(request("skipped"));
+	assert.deepEqual(await queue.startInitial(request("initial"), Symbol("opening-turn")), completed("initial"));
+	const bad = queue.enqueue(request("bad"), batch);
+	const skipped = queue.enqueue(request("skipped"), batch);
 	await started.promise;
 	gate.resolve(resultError("failed", "continuation failed"));
 	assert.deepEqual(await bad, resultError("failed", "continuation failed"));
 	assert.deepEqual(await skipped, resultError("failed", "Continuation skipped because the previous continuation failed or was cancelled."));
-	assert.deepEqual(await queue.enqueue(request("reuse")), completed("reuse"));
+	assert.deepEqual(await queue.enqueue(request("reuse"), laterBatch), completed("reuse"));
 	assert.deepEqual(calls, ["initial", "bad", "reuse"]);
 });
 
 test("a continuation aborted while waiting does not run and breaks its batch", async () => {
 	const gate = deferred<DelegateCmdResult>();
+	const batch = Symbol("turn");
+	const laterBatch = Symbol("later-turn");
 	const calls: string[] = [];
 	const queue = new ContinuationQueue(session(), async (req) => {
 		calls.push(req.input);
 		return req.input === "initial" ? gate.promise : completed(req.input);
 	});
-	const initial = queue.startInitial(request("initial"));
+	const initial = queue.startInitial(request("initial"), batch);
 	const controller = new AbortController();
-	const cancelled = queue.enqueue(request("cancelled", controller.signal));
-	const skipped = queue.enqueue(request("skipped"));
+	const cancelled = queue.enqueue(request("cancelled", controller.signal), batch);
+	const skipped = queue.enqueue(request("skipped"), batch);
 	controller.abort();
 	gate.resolve(completed("initial"));
 	assert.deepEqual(await initial, completed("initial"));
 	assert.deepEqual(await cancelled, resultError("cancelled", "Continuation was cancelled while waiting."));
 	assert.deepEqual(await skipped, resultError("failed", "Continuation skipped because the previous continuation failed or was cancelled."));
-	assert.deepEqual(await queue.enqueue(request("later")), completed("later"));
+	assert.deepEqual(await queue.enqueue(request("later"), laterBatch), completed("later"));
 	assert.deepEqual(calls, ["initial", "later"]);
 });
 
@@ -129,7 +151,7 @@ test("a rejected active request is classified as cancelled if its signal was abo
 	const gate = deferred<DelegateCmdResult>();
 	const controller = new AbortController();
 	const queue = new ContinuationQueue(session(), () => gate.promise);
-	const active = queue.startInitial(request("active", controller.signal));
+	const active = queue.startInitial(request("active", controller.signal), Symbol("turn"));
 	controller.abort();
 	gate.reject(new Error("abort failed"));
 	assert.deepEqual(await active, resultError("cancelled", "abort failed"));
@@ -144,8 +166,9 @@ test("close aborts once, rejects queued and future work, and waits for abort and
 		calls.push(req.input);
 		return activeGate.promise;
 	});
-	const active = queue.startInitial(request("active"));
-	const waiting = queue.enqueue(request("waiting"));
+	const batch = Symbol("turn");
+	const active = queue.startInitial(request("active"), batch);
+	const waiting = queue.enqueue(request("waiting"), batch);
 	let closed = false;
 	const closing = queue.close().then(() => { closed = true; });
 	const closingAgain = queue.close();
@@ -161,16 +184,17 @@ test("close aborts once, rejects queued and future work, and waits for abort and
 	await Promise.all([closing, closingAgain]);
 	assert.equal(closed, true);
 	assert.deepEqual(calls, ["active"]);
-	assert.deepEqual(await queue.startInitial(request("after close")), resultError("cancelled", "Child session was closed."));
-	assert.deepEqual(await queue.enqueue(request("afterwards")), resultError("cancelled", "Child session was closed."));
+	assert.deepEqual(await queue.startInitial(request("after close"), Symbol("after-close")), resultError("cancelled", "Child session was closed."));
+	assert.deepEqual(await queue.enqueue(request("afterwards"), Symbol("after-close")), resultError("cancelled", "Child session was closed."));
 });
 
 test("close also waits for abort after active and queued requests settle", async () => {
 	const activeGate = deferred<DelegateCmdResult>();
 	const abortGate = deferred<void>();
 	const queue = new ContinuationQueue(session(() => abortGate.promise), () => activeGate.promise);
-	const active = queue.startInitial(request("active"));
-	const waiting = queue.enqueue(request("waiting"));
+	const batch = Symbol("turn");
+	const active = queue.startInitial(request("active"), batch);
+	const waiting = queue.enqueue(request("waiting"), batch);
 	let closed = false;
 	const closing = queue.close().then(() => { closed = true; });
 	activeGate.resolve(completed("done"));

@@ -49,6 +49,10 @@ function createExtensionFactory(root: RootSharedState, registry: ChildRegistry, 
 
 function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = new ChildRegistry(), sourcePath = extensionSourcePath, subordinationLevel = 0): void {
 	const notifiedConfigurationWarnings = new Set<string>();
+	// Pi emits these around one assistant response and its complete tool-call batch.
+	let activeTurnBatch: symbol | undefined;
+	pi.on("turn_start", () => { activeTurnBatch = Symbol("delegate-turn"); });
+	pi.on("turn_end", () => { activeTurnBatch = undefined; });
 	const getBaseConfig = (): ExtensionConfig => {
 		if (root.snapshot) return root.snapshot.config;
 		if (root.sources) return root.sources.config;
@@ -134,6 +138,7 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 			return text;
 		},
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			const batch = activeTurnBatch ?? Symbol("delegate-unscoped-call");
 			if (subordinationLevel === 0 && !root.closed) root.context = ctx;
 			if (root.closed || !root.context) return createDelegateToolResult(resultError("failed", "The root session is unavailable."));
 			if (!params.title.trim()) return createDelegateToolResult(resultError("failed", "`title` must be a non-empty string."));
@@ -145,7 +150,7 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 				if (params.agent !== undefined) return createDelegateToolResult(resultError("failed", "Do not specify `agent` when continuing an existing child session."));
 				const child = registry.get(continuationId);
 				if (!child || child.cwd !== ctx.cwd) return createDelegateToolResult(resultError("failed", "Session ID is unknown, expired, or cwd-mismatched. Use a valid child session ID returned by a previous delegation request, or omit `continue_session` (or leave it empty) to start a new child session."));
-				const result = await child.queue.enqueue({ input: params.input, signal: abortSignal, onUpdate, theme: ctx.ui.theme });
+				const result = await child.queue.enqueue({ input: params.input, signal: abortSignal, onUpdate, theme: ctx.ui.theme }, batch);
 				if (result.status === "completed") result.sessionId = continuationId;
 				return createDelegateToolResult(result);
 			}
@@ -205,7 +210,7 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 				})();
 				await registry.trackSetup(setup);
 				if (!child) throw new Error("Child session setup did not produce a session.");
-				const result = await child.queue.startInitial({ input: params.input, signal: abortSignal, onUpdate, theme: ctx.ui.theme });
+				const result = await child.queue.startInitial({ input: params.input, signal: abortSignal, onUpdate, theme: ctx.ui.theme }, batch);
 				if (result.status !== "completed") { registry.remove(child.session.sessionId, child); await disposeChild(child); return createDelegateToolResult(result); }
 				result.sessionId = child.session.sessionId;
 				return createDelegateToolResult(result);
