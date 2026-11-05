@@ -16,6 +16,4 @@ Independent child sessions may run concurrently. Dependent work can be staged by
 
 ## Configuration boundary
 
-Agent definitions own child tool access and skills policy; deployment-facing agent presets select models. The selected definition remains bound to the child across continuations. See [Agent definitions](./DESIGN_DEF.md) for the details.
-
-Legacy preset-owned tool rules must be moved to agent definitions: their presence is a configuration error that prevents delegation rather than silently widening access. The removed `subagentPreamble` is ignored with a warning; agent bodies replace it.
+Agent definitions own child tool access, skills policy, and model selection. A model value is always a concrete ID; omitted model inherits the immediate caller. The selected definition remains bound to the child across continuations.

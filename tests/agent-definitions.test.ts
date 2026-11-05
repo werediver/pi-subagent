@@ -6,15 +6,14 @@ import { join } from "node:path";
 import { buildAgentSnapshot, captureAgentSources, discoverAgentSnapshot } from "../src/agent-definitions.ts";
 import { evaluateToolAccess } from "../src/tool-access.ts";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
-import type { ExtensionConfig } from "../src/config.ts";
 
-function fixture(run: (f: { dirs: { project: string; user: string }; put: (scope: "project" | "user", file: string, text: string) => string; capture: (trusted?: boolean, config?: ExtensionConfig) => ReturnType<typeof captureAgentSources>; discover: (trusted?: boolean, config?: ExtensionConfig, skills?: string[]) => ReturnType<typeof discoverAgentSnapshot> }) => void) {
+function fixture(run: (f: { dirs: { project: string; user: string }; put: (scope: "project" | "user", file: string, text: string) => string; capture: (trusted?: boolean) => ReturnType<typeof captureAgentSources>; discover: (trusted?: boolean, skills?: string[]) => ReturnType<typeof discoverAgentSnapshot> }) => void) {
 	const root = mkdtempSync(join(tmpdir(), "agent-definitions-"));
 	const cwd = join(root, "project"), agentDir = join(root, "user");
 	const dirs = { project: join(cwd, CONFIG_DIR_NAME, "agents"), user: join(agentDir, "agents") };
 	for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true });
 	try {
-		run({ dirs, put(scope, file, text) { const path = join(dirs[scope], file); writeFileSync(path, text); return path; }, capture(trusted = true, config = { agentPresets: {} }) { return captureAgentSources({ cwd, agentDir, trusted, config }); }, discover(trusted = true, config = { agentPresets: {} }, skillNames = []) { return discoverAgentSnapshot({ cwd, agentDir, trusted, config, skillNames }); } });
+		run({ dirs, put(scope, file, text) { const path = join(dirs[scope], file); writeFileSync(path, text); return path; }, capture(trusted = true) { return captureAgentSources({ cwd, agentDir, trusted }); }, discover(trusted = true, skillNames = []) { return discoverAgentSnapshot({ cwd, agentDir, trusted, skillNames }); } });
 	} finally { rmSync(root, { recursive: true, force: true }); }
 }
 const agent = (name: string, more = "", body = "") => `---\nname: ${name}\n${more}---\n${body}`;
@@ -36,23 +35,27 @@ test("trust, lexical order, duplicates, invalid project fallback and no ancestor
 	assert.deepEqual(discover(false).diagnostics, []);
 }));
 
-test("static preset first, concrete IDs accepted without registry, provider constraints", () => fixture(({ put, discover }) => {
+test("model is always a concrete ID and provider requires a model", () => fixture(({ put, discover }) => {
 	put("user", "a.md", agent("a", "model: review\n"));
 	put("user", "b.md", agent("b", "model: unavailable-id\nprovider: missing-provider\n"));
 	put("user", "c.md", agent("c", "model: parent\nprovider: p\n"));
 	put("user", "d.md", agent("d", "provider: p\n"));
-	put("user", "e.md", agent("e", "model: review\nprovider: p\n"));
-	put("user", "f.md", agent("f", "model: main\n"));
-	const snapshot = discover(true, { agentPresets: { review: { model: "unavailable" } } });
-	assert.deepEqual(snapshot.definitions.map((d) => d.model), [{ kind: "preset", name: "review" }, { kind: "id", name: "unavailable-id", provider: "missing-provider" }, { kind: "preset", name: "main" }]);
-	assert.equal(snapshot.diagnostics.length, 3);
-	assert.ok(snapshot.diagnostics.every((d) => /provider/.test(d.reason)));
+	put("user", "e.md", agent("e", "model: main\n"));
+	const snapshot = discover();
+	assert.deepEqual(snapshot.definitions.map((d) => d.model), [
+		{ name: "review" },
+		{ name: "unavailable-id", provider: "missing-provider" },
+		{ name: "parent", provider: "p" },
+		{ name: "main" },
+	]);
+	assert.equal(snapshot.diagnostics.length, 1);
+	assert.match(snapshot.diagnostics[0].reason, /provider.*alongside.*model/i);
 }));
 
 test("unknown fields reported and ignored, nested skills and preload validated against full catalog", () => fixture(({ put, discover }) => {
 	const path = put("user", "a.md", agent("test", "mystery: true\nskills:\n  allowDiscovery: false\n  preload: [one, two]\n  future: x\n"));
 	put("user", "b.md", agent("bad", "skills: { preload: [missing] }\n"));
-	const snapshot = discover(true, undefined, ["one", "two"]);
+	const snapshot = discover(true, ["one", "two"]);
 	assert.deepEqual(snapshot.definitions[0].skills, { allowDiscovery: false, preload: ["one", "two"] });
 	assert.equal(snapshot.diagnostics.length, 3);
 	assert.equal(snapshot.diagnostics[0].filename, path);
@@ -75,7 +78,7 @@ test("invalid known fields and malformed YAML or delimiters are rejected", () =>
 
 test("YAML quoting, flow and aliases, ordered tool patterns including __proto__, body and CRLF", () => fixture(({ put, discover }) => {
 	put("user", "a.md", "---\r\nname: ' yaml '\r\ndescription: \"A: purpose\"\r\ntools: { read: false, '*': true, __proto__: false, bash: false }\r\nskills: { preload: &names [one], allowDiscovery: false, other: *names }\r\nthinkingLevel: xhigh\r\n---\r\n\r\nBody\r\nline\r\n");
-	const snapshot = discover(true, undefined, ["one"]);
+	const snapshot = discover(true, ["one"]);
 	assert.equal(snapshot.definitions[0].name, "yaml");
 	assert.equal(snapshot.definitions[0].prompt, "Body\nline");
 	assert.deepEqual(snapshot.definitions[0].tools, [{ pattern: "read", enabled: false }, { pattern: "*", enabled: true }, { pattern: "__proto__", enabled: false }, { pattern: "bash", enabled: false }]);
@@ -105,35 +108,29 @@ test("duplicate keys, nulls, sequences and bad aliases are rejected", () => fixt
 	assert.equal(snapshot.diagnostics.filter((d) => !d.reason.includes("unknown frontmatter field")).length, invalid.length);
 }));
 
-test("capture freezes files and config; build applies skill names without rescanning", () => fixture(({ put, capture }) => {
+test("capture freezes agent files; build applies skill names without rescanning", () => fixture(({ put, capture }) => {
 	const project = put("project", "a.md", agent("shared", "model: review\nskills: { preload: [late] }\n", "project original"));
 	const user = put("user", "b.md", agent("shared", "description: fallback\n", "user original"));
 	const deleted = put("user", "c.md", agent("deleted", "", "still captured"));
-	const config: ExtensionConfig = { agentPresets: { review: { model: "old", thinkingLevel: "low" } } };
-	const captured = capture(true, config);
-	assert.ok(Object.isFrozen(captured) && Object.isFrozen(captured.sources) && Object.isFrozen(captured.sources[0]) && Object.isFrozen(captured.config.agentPresets.review));
+	const captured = capture(true);
+	assert.ok(Object.isFrozen(captured) && Object.isFrozen(captured.sources) && Object.isFrozen(captured.sources[0]));
 	assert.throws(() => { (captured.sources as unknown[]).push({}); }, TypeError);
-	assert.throws(() => { (captured.config.agentPresets.review as { model: string }).model = "corrupt"; }, TypeError);
 	put("project", "a.md", agent("changed"));
 	rmSync(user);
 	rmSync(deleted);
 	put("project", "new.md", agent("new"));
-	(config.agentPresets.review as { model: string }).model = "new";
-	delete config.agentPresets.review;
 	const withSkill = buildAgentSnapshot(captured, ["late"]);
 	assert.deepEqual(withSkill.definitions.map((definition) => [definition.name, definition.prompt]), [["shared", "project original"], ["deleted", "still captured"]]);
-	assert.deepEqual(withSkill.definitions[0].model, { kind: "preset", name: "review" });
+	assert.deepEqual(withSkill.definitions[0].model, { name: "review" });
 	assert.match(withSkill.diagnostics[0].reason, /duplicate/);
 	assert.equal(withSkill.diagnostics[0].filename, user);
-	assert.deepEqual(withSkill.config.agentPresets.review, { model: "old", thinkingLevel: "low" });
 	const withoutSkill = buildAgentSnapshot(captured, []);
 	assert.deepEqual(withoutSkill.definitions.map((definition) => [definition.name, definition.prompt]), [["shared", "user original"], ["deleted", "still captured"]]);
 	assert.equal(withoutSkill.diagnostics[0].filename, project);
 	assert.match(withoutSkill.diagnostics[0].reason, /unknown preloaded skill/);
 	assert.deepEqual(buildAgentSnapshot(captured, ["late"]), withSkill);
-	const fresh = buildAgentSnapshot(capture(true, config), ["late"]);
+	const fresh = buildAgentSnapshot(capture(true), ["late"]);
 	assert.deepEqual(fresh.definitions.map((definition) => definition.name), ["changed", "new"]);
-	assert.deepEqual(fresh.config.agentPresets, {});
 }));
 
 test("read and directory failures retain their captured position among validation diagnostics", () => fixture(({ dirs, put, capture }) => {
@@ -177,13 +174,9 @@ test("untrusted capture excludes project files even if later built after changes
 	assert.equal(captured.sources.length, 1);
 }));
 
-test("snapshot and nested configuration are immutable deep copies", () => fixture(({ put, discover }) => {
+test("snapshot is an immutable deep copy", () => fixture(({ put, discover }) => {
 	put("user", "a.md", agent("a", "tools: { read: false }\nskills: { preload: [one] }\n"));
-	const config: ExtensionConfig = { agentPresets: { review: { model: "old", thinkingLevel: "low" } } };
-	const snapshot = discover(true, config, ["one"]);
-	(config.agentPresets.review as { model: string }).model = "new";
-	(config.agentPresets.review as { thinkingLevel: string }).thinkingLevel = "high";
-	assert.deepEqual(snapshot.config.agentPresets.review, { model: "old", thinkingLevel: "low" });
-	assert.ok(Object.isFrozen(snapshot) && Object.isFrozen(snapshot.definitions) && Object.isFrozen(snapshot.definitions[0].tools[0]) && Object.isFrozen(snapshot.definitions[0].skills.preload) && Object.isFrozen(snapshot.config.agentPresets.review));
+	const snapshot = discover(true, ["one"]);
+	assert.ok(Object.isFrozen(snapshot) && Object.isFrozen(snapshot.definitions) && Object.isFrozen(snapshot.definitions[0].tools[0]) && Object.isFrozen(snapshot.definitions[0].skills.preload));
 	assert.throws(() => { (snapshot.definitions[0].tools[0] as { enabled: boolean }).enabled = true; }, TypeError);
 }));

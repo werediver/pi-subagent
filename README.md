@@ -46,36 +46,25 @@ A child starts with its own conversation, so include the relevant task context. 
 An agent can add these optional frontmatter fields:
 
 ```yaml
-model: review-model       # preset name, or concrete model ID
-# provider: anthropic     # only with a concrete model ID
+model: claude-sonnet-4
+# provider: anthropic     # optional
 thinkingLevel: high
 skills:
   allowDiscovery: false
   preload: [code-review]  # must name an existing discovered skill
 ```
 
-Omitting `model` inherits the immediate caller’s model and thinking level. Built-in presets `parent` and `main` select the caller and root session respectively. A concrete model ID without `provider` uses the current root provider. Root model changes affect later agent availability and openings without `/reload`; existing children retain their selected configuration.
+`model` always names a concrete model ID; values such as `parent` and `main` have no special meaning. Omitting `model` inherits the immediate caller’s model and thinking level. With an explicit model ID, `provider` may select its provider; otherwise the current root provider is used. An explicit `thinkingLevel` overrides the resolved level; without one, concrete model selections use the new child session’s default. Root model changes affect later agent availability and openings without `/reload`; existing children retain their selected configuration.
 
 `allowDiscovery` defaults to `true`. Setting it to `false` hides the skill catalog from the child’s prompt, but does not block explicit `/skill:name` expansion. `preload` adds full skill bodies regardless of catalog visibility.
 
-Optional model presets live in `~/.pi/agent/subagent.json` and trusted-project `.pi/subagent.json`; project preset names override user names:
-
-```json
-{
-  "agentPresets": {
-    "review-model": { "model": "example-model-id", "provider": "example-provider", "thinkingLevel": "high" },
-    "careful-parent": { "base": "parent", "thinkingLevel": "high" }
-  }
-}
-```
-
-Presets select models and thinking levels, not tools. The root captures agent files and preset settings for the runtime; use `/reload` after changing them. Definitions are validated against the root skill catalog on its first turn. A valid agent whose model is currently unavailable is omitted from the digest until it becomes resolvable.
+Agent definitions are captured for the runtime and refreshed by `/reload`. Definitions are validated against the root skill catalog on its first turn. A valid agent whose model is currently unavailable is omitted from the digest until it becomes resolvable.
 
 Child sessions create their own Pi model runtimes. Providers must also be available to those runtimes; registering a provider only dynamically in the root does not automatically copy its implementation or credentials to children.
 
-## Migration
+## Request fields
 
-Opening calls now require `agent`; caller-supplied `agentPreset` and `skills` are no longer supported. Move tool rules from `agentPresets.*.tools` to agent frontmatter: legacy preset tool rules fail closed and prevent delegation. `subagentPreamble` is ignored with a warning; move its contents into agent bodies.
+Opening calls require `agent`. Caller-supplied `agentPreset` and `skills` fields are not supported; model, tools, and skills policy belong to the selected agent definition.
 
 ## Development
 

@@ -18,11 +18,11 @@ import { createAssistantMessageEventStream } from ${JSON.stringify(aiPath)};
 const log = (value) => appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(value) + "\\n");
 export default function (pi) {
   log({ type: "factory" });
-  for (const [provider, api, id] of [["nested-test", "nested-test-api", "nested-model"], ["alternate-test", "alternate-test-api", "alternate-model"]]) pi.registerProvider(provider, {
+  for (const [provider, api, ids] of [["nested-test", "nested-test-api", ["nested-model", "parent", "main"]], ["alternate-test", "alternate-test-api", ["alternate-model", "parent", "main"]]]) pi.registerProvider(provider, {
     baseUrl: "https://invalid.example", apiKey: "test-key", api,
     // Deliberately omit switch-target: it exists only in the root registry.
-    models: [{ id, name: id, reasoning: true, input: ["text"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32768, maxTokens: 1024 }],
+    models: ids.map(id => ({ id, name: id, reasoning: true, input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32768, maxTokens: 1024 })),
     streamSimple(model, context, options) {
       const stream = createAssistantMessageEventStream();
       const users = context.messages.filter(m => m.role === "user").map(m => typeof m.content === "string" ? m.content : m.content.map(p => p.text || "").join(""));
@@ -61,7 +61,7 @@ export default function (pi) {
         const calls = [
           { title: "Missing provider", input: "must not run dynamic", agent: "dynamic" },
           { title: "Missing main", input: "must not run main", agent: "main" },
-          { title: "Still parent", input: "no root parent leaf", agent: "parent" },
+          { title: "Caller inheritance", input: "no root inherited leaf", agent: "inherit" },
         ];
         args = calls[turnResults.length];
       }
@@ -89,7 +89,7 @@ export default function (pi) {
 	writeFileSync(join(agentDir, "extensions", "fake-provider.js"), source);
 }
 
-test("nested sessions share the root config snapshot while models remain live, until reload", async () => {
+test("nested sessions share the agent snapshot while root models remain live, until reload", async () => {
 	const rootDir = mkdtempSync(join(tmpdir(), "pi-nested-runtime-"));
 	const agentDir = join(rootDir, "agent");
 	const project = join(rootDir, "project");
@@ -116,11 +116,11 @@ test("nested sessions share the root config snapshot while models remain live, u
 	const nestedRules = "tools:\n  '*': false\n  read: true\n  delegate: true\n  bash: false\nskills:\n  preload: [nested-check]\n";
 	const leafRules = "tools:\n  '*': false\n  read: true\n  bash: false\n";
 	putAgent("child", nestedRules.replace("preload: [nested-check]", "preload: [nested-check, root-only]"), "AGENT-BODY-CHILD");
-	putAgent("grandchild", `model: parent\n${nestedRules}`, "AGENT-BODY-GRANDCHILD");
-	for (const name of ["main", "dynamic", "parent"]) putAgent(name, `model: ${name}\n${leafRules}`, `${name.toUpperCase()}-AGENT-BODY`);
-	writeFileSync(join(agentDir, "subagent.json"), JSON.stringify({
-		agentPresets: { dynamic: { model: "switch-target", thinkingLevel: "medium" } },
-	}));
+	putAgent("grandchild", nestedRules, "AGENT-BODY-GRANDCHILD");
+	putAgent("main", `model: main\nthinkingLevel: high\n${leafRules}`, "MAIN-AGENT-BODY");
+	putAgent("dynamic", `model: switch-target\nthinkingLevel: medium\n${leafRules}`, "DYNAMIC-AGENT-BODY");
+	putAgent("parent", `model: parent\nthinkingLevel: low\n${leafRules}`, "PARENT-AGENT-BODY");
+	putAgent("inherit", leafRules, "INHERIT-AGENT-BODY");
 	writeFakeProvider(agentDir, logPath);
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	const harness = createExtensionHarness();
@@ -135,11 +135,11 @@ test("nested sessions share the root config snapshot while models remain live, u
 		const registry = new ModelRegistry(runtime);
 		registry.registerProvider("nested-test", {
 			baseUrl: "https://invalid.example", apiKey: "test-key", api: "nested-test-api",
-			models: [{ id: "nested-model", name: "Nested test", reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32768, maxTokens: 1024 }],
+			models: ["nested-model", "parent", "main"].map(id => ({ id, name: id, reasoning: true, input: ["text" as const], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32768, maxTokens: 1024 })),
 		});
 		registry.registerProvider("alternate-test", {
 			baseUrl: "https://invalid.example", apiKey: "test-key", api: "alternate-test-api",
-			models: ["alternate-model", "switch-target"].map(id => ({ id, name: id, reasoning: true, input: ["text" as const], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32768, maxTokens: 1024 })),
+			models: ["alternate-model", "switch-target", "parent", "main"].map(id => ({ id, name: id, reasoning: true, input: ["text" as const], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32768, maxTokens: 1024 })),
 		});
 		const model = registry.find("nested-test", "nested-model");
 		assert.ok(model);
@@ -191,13 +191,10 @@ test("nested sessions share the root config snapshot while models remain live, u
 		assert.equal(requests().some(r => r.users.at(-1) === "must be skipped after invalid"), false);
 		await harness.emit("turn_end", { type: "turn_end", turnIndex: 0, message: {}, toolResults: [] }, ctx);
 
-		// Change both the agent definition and preset after snapshot creation. The
-		// replacement child disables delegate, making continuation reuse observable.
+		// Change agent definitions after snapshot creation. The replacement child
+		// disables delegate, making continuation reuse observable.
 		putAgent("child", leafRules, "RELOADED-CHILD-BODY");
-		putAgent("dynamic", `model: dynamic\n${leafRules}`, "RELOADED-DYNAMIC-BODY");
-		writeFileSync(join(agentDir, "subagent.json"), JSON.stringify({
-			agentPresets: { dynamic: { model: "alternate-model", thinkingLevel: "low" } },
-		}));
+		putAgent("dynamic", `model: alternate-model\nthinkingLevel: low\n${leafRules}`, "RELOADED-DYNAMIC-BODY");
 		const afterEdit = (await harness.execute(ctx, { title: "New after edit", input: "new after edit", agent: "child" })).details as DelegateCmdResult;
 		assert.equal(afterEdit.status, "completed", JSON.stringify(afterEdit));
 		assert.ok(afterEdit.sessionId);
@@ -259,17 +256,17 @@ test("nested sessions share the root config snapshot while models remain live, u
 		const resumedGrandchild = byPrompt("child continuation").at(-1).turnResults[0];
 		assert.equal(resumedGrandchild.details?.sessionId, grandchildId);
 		for (const origin of ["child", "grandchild"]) {
-			for (const [preset, provider, modelId, reasoning] of [
-				["main", "alternate-test", "alternate-model", "high"],
+			for (const [agentName, provider, modelId, reasoning] of [
+				["main", "alternate-test", "main", "high"],
 				["dynamic", "alternate-test", "switch-target", "medium"],
-				["parent", "nested-test", "nested-model", "low"],
+				["parent", "alternate-test", "parent", "low"],
 			]) {
-				const leaf = byPrompt(`${origin} ${preset} leaf`);
-				assert.equal(leaf.length, 1, `${origin} ${preset}`);
+				const leaf = byPrompt(`${origin} ${agentName} leaf`);
+				assert.equal(leaf.length, 1, `${origin} ${agentName}`);
 				assert.equal(leaf[0].provider, provider);
 				assert.equal(leaf[0].model, modelId);
 				assert.equal(leaf[0].reasoning, reasoning);
-				assert.match(leaf[0].systemPrompt, new RegExp(`${preset.toUpperCase()}-AGENT-BODY`));
+				assert.match(leaf[0].systemPrompt, new RegExp(`${agentName.toUpperCase()}-AGENT-BODY`));
 				assert.doesNotMatch(leaf[0].systemPrompt, /RELOADED-DYNAMIC-BODY|AGENT-BODY-CHILD|AGENT-BODY-GRANDCHILD|NESTED-SKILL-BODY|ROOT-ONLY-SKILL-BODY/);
 				assert.ok(leaf[0].tools.includes("read"));
 				assert.ok(!leaf[0].tools.includes("delegate"));
@@ -290,14 +287,14 @@ test("nested sessions share the root config snapshot while models remain live, u
 		assert.equal(noRootResults[0].isError, true);
 		assert.match(JSON.stringify(noRootResults[0].content), /needs a provider because the root session has no active model/);
 		assert.equal(noRootResults[1].isError, true);
-		assert.match(JSON.stringify(noRootResults[1].content), /main session has no active model/);
+		assert.match(JSON.stringify(noRootResults[1].content), /needs a provider because the root session has no active model/);
 		assert.equal(noRootResults[2].isError, false);
 		assert.equal(byPrompt("must not run dynamic").length, 0);
 		assert.equal(byPrompt("must not run main").length, 0);
-		assert.equal(byPrompt("no root parent leaf")[0].provider, "nested-test");
+		assert.equal(byPrompt("no root inherited leaf")[0].provider, "nested-test");
 
 		// Shutdown invalidates the old tree; a fresh factory acts as reload and
-		// snapshots the replacement config rather than inheriting the old tree.
+		// snapshots the replacement agent definitions rather than inheriting the old tree.
 		await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx);
 		const closed = (await harness.execute(ctx, { title: "Closed", input: "closed", continue_session: initial.sessionId })).details as DelegateCmdResult;
 		assert.equal(closed.status, "failed");

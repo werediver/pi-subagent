@@ -93,12 +93,8 @@ test("live provider changes update the digest and openings without rebuilding th
 test("active delegate gets only escaped agent names and descriptions; inactive delegate gets no digest", withSandbox(async (project, agentDir) => {
 	const projectFile = join(project, CONFIG_DIR_NAME, "agents", "project-secret-path.md");
 	const userFile = join(agentDir, "agents", "user-secret-path.md");
-	writeFileSync(projectFile, `---\nname: 'name<&>"'\ndescription: 'Purpose <tag> & "quotes" and ''apostrophe'''\nmodel: private-preset\n---\nPROJECT_PRIVATE_BODY`);
+	writeFileSync(projectFile, `---\nname: 'name<&>"'\ndescription: 'Purpose <tag> & "quotes" and ''apostrophe'''\nmodel: target-id\n---\nPROJECT_PRIVATE_BODY`);
 	writeFileSync(userFile, "---\nname: plain\n---\nUSER_PRIVATE_BODY");
-	writeFileSync(join(agentDir, "subagent.json"), JSON.stringify({ agentPresets: {
-		"private-preset": { model: "target-id", description: "PRESET_PRIVATE_DESCRIPTION" },
-		"unused-preset": { base: "main", description: "OBSOLETE_PRESET_LIST" },
-	} }));
 	const { ctx } = fakeContext(project, [fakeModel("provider-a", "root"), fakeModel("provider-a", "target-id")]);
 	const harness = createExtensionHarness();
 	await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
@@ -111,7 +107,7 @@ test("active delegate gets only escaped agent names and descriptions; inactive d
 			'- &quot;name&lt;&amp;&gt;\\&quot;&quot;: Purpose &lt;tag&gt; &amp; &quot;quotes&quot; and &apos;apostrophe&apos;',
 			'- &quot;plain&quot;',
 		].join("\n"));
-		for (const secret of ["PROJECT_PRIVATE_BODY", "USER_PRIVATE_BODY", projectFile, userFile, "project-secret-path", "user-secret-path", "private-preset", "unused-preset", "PRESET_PRIVATE_DESCRIPTION", "OBSOLETE_PRESET_LIST", "agentPreset"]) {
+		for (const secret of ["PROJECT_PRIVATE_BODY", "USER_PRIVATE_BODY", projectFile, userFile, "project-secret-path", "user-secret-path", "target-id", "agentPreset"]) {
 			assert.ok(!result.includes(secret), `digest leaked ${secret}`);
 		}
 		assert.doesNotMatch(result, /\b(project|user|scope)\b/i);

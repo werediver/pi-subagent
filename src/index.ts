@@ -11,7 +11,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
-import { loadExtensionConfig, type ExtensionConfig } from "./config.ts";
 import { buildAgentSnapshot, captureAgentSources, type AgentSnapshot, type AgentSources } from "./agent-definitions.ts";
 import { formatAgentDigest, getAgentAvailability, resolveAgentModel, type ModelSettings } from "./model-resolver.ts";
 import { ContinuationQueue } from "./queue.ts";
@@ -37,7 +36,6 @@ export type DelegateCmdParams = Static<typeof DelegateCmdParams>;
 type RootSharedState = {
 	context?: ExtensionContext;
 	closed: boolean;
-	baseConfig?: { config: ExtensionConfig } | { error: unknown };
 	sources?: AgentSources;
 	snapshot?: AgentSnapshot;
 	skills?: readonly Skill[];
@@ -48,38 +46,28 @@ function createExtensionFactory(root: RootSharedState, registry: ChildRegistry, 
 }
 
 function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = new ChildRegistry(), sourcePath = extensionSourcePath, subordinationLevel = 0): void {
-	const notifiedConfigurationWarnings = new Set<string>();
 	// Pi emits these around one assistant response and its complete tool-call batch.
 	let activeTurnBatch: symbol | undefined;
 	pi.on("turn_start", () => { activeTurnBatch = Symbol("delegate-turn"); });
 	pi.on("turn_end", () => { activeTurnBatch = undefined; });
-	const getBaseConfig = (): ExtensionConfig => {
-		if (root.snapshot) return root.snapshot.config;
-		if (root.sources) return root.sources.config;
-		if (!root.baseConfig) {
-			if (!root.context || root.closed) throw new Error("The root session is unavailable.");
-			try { root.baseConfig = { config: loadExtensionConfig(root.context) }; }
-			catch (error) { root.baseConfig = { error }; }
-		}
-		if ("config" in root.baseConfig) return root.baseConfig.config;
-		throw root.baseConfig.error;
+	const notifiedInitializationWarnings = new Set<string>();
+	const reportInitializationError = (ctx: ExtensionContext, error: unknown) => {
+		const detail = error instanceof Error ? error.message : String(error);
+		if (notifiedInitializationWarnings.has(detail)) return;
+		notifiedInitializationWarnings.add(detail);
+		const message = `Could not initialize agent definitions: ${detail}`;
+		if (ctx.hasUI) ctx.ui.notify(message, "warning");
+		else console.warn(message);
 	};
 	const captureRootSources = (ctx: ExtensionContext): AgentSources => {
-		if (!root.sources) root.sources = captureAgentSources({ cwd: ctx.cwd, agentDir: getAgentDir(), trusted: ctx.isProjectTrusted(), config: getBaseConfig() });
+		if (!root.sources) root.sources = captureAgentSources({ cwd: ctx.cwd, agentDir: getAgentDir(), trusted: ctx.isProjectTrusted() });
 		return root.sources;
-	};
-	const reportConfigError = (ctx: ExtensionContext, error: unknown) => {
-		const message = error instanceof Error ? error.message : String(error);
-		if (notifiedConfigurationWarnings.has(message)) return;
-		notifiedConfigurationWarnings.add(message);
-		if (ctx.hasUI) ctx.ui.notify(`Could not load pi-subagent configuration: ${message}`, "warning");
-		else console.warn(`Could not load pi-subagent configuration: ${message}`);
 	};
 	if (subordinationLevel === 0) {
 		const updateRootContext = (_event: unknown, ctx: ExtensionContext) => { if (!root.closed) root.context = ctx; };
 		pi.on("session_start", (event, ctx) => {
 			updateRootContext(event, ctx);
-			if (!root.closed) try { captureRootSources(ctx); } catch (error) { reportConfigError(ctx, error); }
+			if (!root.closed) try { captureRootSources(ctx); } catch (error) { reportInitializationError(ctx, error); }
 		});
 		pi.on("model_select", updateRootContext);
 		pi.on("thinking_level_select", updateRootContext);
@@ -107,7 +95,7 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 						if (ctx.hasUI) ctx.ui.notify(message, "warning");
 						else console.warn(message);
 					}
-				} catch (error) { reportConfigError(ctx, error); }
+				} catch (error) { reportInitializationError(ctx, error); }
 			}
 		}
 		if (!event.systemPromptOptions.selectedTools?.includes("delegate") || !root.snapshot || !root.context || root.closed) return;
@@ -172,14 +160,13 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 			let resolvedModel: ModelSettings;
 			let definition: AgentSnapshot["definitions"][number];
 			try {
-				const config = getBaseConfig();
 				const name = params.agent?.trim();
 				if (!name) throw new Error("`agent` is required when opening a child session.");
 				if (!root.snapshot || !root.skills) throw new Error("The agent snapshot is not yet validated against the full skill catalog; wait for the root session to start its first turn.");
 				const found = root.snapshot.definitions.find((agent) => agent.name === name);
 				if (!found) throw new Error(`Unknown agent ${JSON.stringify(name)}.`);
 				definition = found;
-				resolvedModel = resolveAgentModel(definition, config, ctx, rootModel, rootContext.modelRegistry);
+				resolvedModel = resolveAgentModel(definition, ctx, rootModel, rootContext.modelRegistry);
 			} catch (error) {
 				return createDelegateToolResult(resultError("failed", error instanceof Error ? error.message : String(error)));
 			}

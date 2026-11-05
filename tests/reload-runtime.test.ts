@@ -64,9 +64,9 @@ export default function (pi) {
 	const definition = join(agents, "example.md");
 	const childDefinition = join(agents, "child.md");
 	writeFileSync(definition, "---\nname: example\nold_field: true\nskills: { preload: [hidden, provided, old-missing] }\n---\nold body\n");
-	writeFileSync(childDefinition, "---\nname: child\nmodel: observer\n---\nOLD-CHILD-BODY\n");
+	writeFileSync(childDefinition, "---\nname: child\nmodel: fake-model\nthinkingLevel: low\n---\nOLD-CHILD-BODY\n");
 	writeFileSync(join(prompts, "review.md"), "Old template $1\n");
-	writeFileSync(join(agentDir, "subagent.json"), JSON.stringify({ agentPresets: { observer: { base: "parent", thinkingLevel: "low" } } }));
+	writeFileSync(join(agentDir, "subagent.json"), "not valid JSON; ignored by the extension");
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	const warnings: string[] = [], errors: string[] = [];
@@ -105,10 +105,10 @@ export default function (pi) {
 		assert.deepEqual(loader.getExtensions().errors, []);
 		assert.ok(loader.getSkills().skills.some(s => s.name === "provided"));
 
-		// session_start captured agent files and config; no before_agent_start has run yet.
+		// session_start captured agent files; no before_agent_start has run yet.
 		writeFileSync(definition, "---\nname: example\nnew_field: true\nskills: { preload: [hidden, provided, new-missing] }\n---\nnew body\n");
-		writeFileSync(childDefinition, "---\nname: child\nmodel: observer\n---\nNEW-CHILD-BODY\n");
-		writeFileSync(join(agentDir, "subagent.json"), JSON.stringify({ agentPresets: { observer: { base: "parent", thinkingLevel: "high" } } }));
+		writeFileSync(childDefinition, "---\nname: child\nmodel: fake-model\nthinkingLevel: high\n---\nNEW-CHILD-BODY\n");
+		writeFileSync(join(agentDir, "subagent.json"), "still ignored after reload");
 		writeSkill(join(skills, "visible"), "visible", "New skill description");
 		writeFileSync(join(prompts, "review.md"), "New template $1\n");
 		await session.prompt("/review first");
@@ -182,6 +182,7 @@ export default function (pi) {
 		assert.match(continuations[0].systemPrompt, /OLD-CHILD-BODY/);
 		assert.doesNotMatch(continuations[0].systemPrompt, /NEW-CHILD-BODY/);
 		assert.deepEqual(errors, []);
+		assert.doesNotMatch(warnings.join("\n"), /subagent\.json|pi-subagent configuration/i);
 	} finally {
 		// The test may leave a child open even after the tested reload. Reload emits
 		// session_shutdown and closes children; dispose() alone does not.

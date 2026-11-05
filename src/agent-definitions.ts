@@ -2,8 +2,6 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR_NAME, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import type { ExtensionConfig } from "./config.ts";
-
 type DeepReadonly<T> = T extends (...args: never[]) => unknown ? T : T extends object ? { readonly [K in keyof T]: DeepReadonly<T[K]> } : T;
 
 export type AgentDefinition = {
@@ -11,21 +9,19 @@ export type AgentDefinition = {
 	readonly description?: string;
 	readonly prompt: string;
 	readonly tools: readonly { readonly pattern: string; readonly enabled: boolean }[];
-	readonly model?: { readonly kind: "preset" | "id"; readonly name: string; readonly provider?: string };
+	readonly model?: { readonly name: string; readonly provider?: string };
 	readonly thinkingLevel?: ModelThinkingLevel;
 	readonly skills: { readonly allowDiscovery: boolean; readonly preload: readonly string[] };
 };
 export type AgentDiagnostic = { readonly filename: string; readonly reason: string };
 export type AgentSnapshot = {
 	readonly definitions: readonly AgentDefinition[];
-	readonly config: DeepReadonly<ExtensionConfig>;
 	readonly diagnostics: readonly AgentDiagnostic[];
 };
 
 /** Ordered file contents and read errors captured before skills are available. */
 export type AgentSources = {
 	readonly sources: readonly ({ readonly filename: string; readonly content: string } | AgentDiagnostic)[];
-	readonly config: DeepReadonly<ExtensionConfig>;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -48,7 +44,7 @@ function requiredString(value: unknown, field: string): string {
 	return value.trim();
 }
 
-function parseDefinition(content: string, config: DeepReadonly<ExtensionConfig>, skillNames: ReadonlySet<string>, report: (reason: string) => void): AgentDefinition {
+function parseDefinition(content: string, skillNames: ReadonlySet<string>, report: (reason: string) => void): AgentDefinition {
 	const normalized = content.replace(/\r\n?/g, "\n");
 	if (!normalized.startsWith("---\n")) throw new Error("expected an opening --- frontmatter delimiter on its own line");
 	// Pi treats a missing delimiter as ordinary body text, so validate it first.
@@ -73,9 +69,8 @@ function parseDefinition(content: string, config: DeepReadonly<ExtensionConfig>,
 	}
 	const modelName = Object.hasOwn(frontmatter, "model") ? requiredString(frontmatter.model, "model") : undefined;
 	const provider = Object.hasOwn(frontmatter, "provider") ? requiredString(frontmatter.provider, "provider") : undefined;
-	const preset = modelName !== undefined && (modelName === "parent" || modelName === "main" || Object.hasOwn(config.agentPresets, modelName));
-	if (provider && (!modelName || preset)) throw new Error("provider is allowed only for a concrete model ID");
-	const model = modelName === undefined ? undefined : { kind: preset ? "preset" as const : "id" as const, name: modelName, ...(provider ? { provider } : {}) };
+	if (provider !== undefined && modelName === undefined) throw new Error("provider is allowed only alongside a concrete model ID");
+	const model = modelName === undefined ? undefined : { name: modelName, ...(provider === undefined ? {} : { provider }) };
 	const thinkingLevel = frontmatter.thinkingLevel;
 	if (Object.hasOwn(frontmatter, "thinkingLevel") && (typeof thinkingLevel !== "string" || !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(thinkingLevel))) throw new Error("invalid thinkingLevel");
 	let allowDiscovery = true;
@@ -97,8 +92,7 @@ function parseDefinition(content: string, config: DeepReadonly<ExtensionConfig>,
 	return { name, ...(description === undefined ? {} : { description }), prompt: body, tools: rules, ...(model === undefined ? {} : { model }), ...(thinkingLevel === undefined ? {} : { thinkingLevel: thinkingLevel as ModelThinkingLevel }), skills: { allowDiscovery, preload } };
 }
 
-export function captureAgentSources(options: { cwd: string; agentDir: string; trusted: boolean; config: ExtensionConfig }): AgentSources {
-	const config = immutableCopy(options.config);
+export function captureAgentSources(options: { cwd: string; agentDir: string; trusted: boolean }): AgentSources {
 	const sources: ({ filename: string; content: string } | AgentDiagnostic)[] = [];
 	const directories = [...(options.trusted ? [join(options.cwd, CONFIG_DIR_NAME, "agents")] : []), join(options.agentDir, "agents")];
 	for (const directory of directories) {
@@ -114,7 +108,7 @@ export function captureAgentSources(options: { cwd: string; agentDir: string; tr
 			catch (error) { sources.push({ filename, reason: error instanceof Error ? error.message : String(error) }); }
 		}
 	}
-	return immutableCopy({ sources, config });
+	return immutableCopy({ sources });
 }
 
 export function buildAgentSnapshot(capture: AgentSources, skillNames: readonly string[]): AgentSnapshot {
@@ -126,15 +120,15 @@ export function buildAgentSnapshot(capture: AgentSources, skillNames: readonly s
 		if (!("content" in source)) { diagnostics.push(source); continue; }
 		const { filename, content } = source;
 		try {
-			const definition = parseDefinition(content, capture.config, skills, (reason) => diagnostics.push({ filename, reason }));
+			const definition = parseDefinition(content, skills, (reason) => diagnostics.push({ filename, reason }));
 			if (names.has(definition.name)) { diagnostics.push({ filename, reason: `duplicate agent name ${JSON.stringify(definition.name)} (ignored)` }); continue; }
 			names.add(definition.name);
 			definitions.push(definition);
 		} catch (error) { diagnostics.push({ filename, reason: error instanceof Error ? error.message : String(error) }); }
 	}
-	return immutableCopy({ definitions, config: capture.config, diagnostics });
+	return immutableCopy({ definitions, diagnostics });
 }
 
-export function discoverAgentSnapshot(options: { cwd: string; agentDir: string; trusted: boolean; config: ExtensionConfig; skillNames: readonly string[] }): AgentSnapshot {
+export function discoverAgentSnapshot(options: { cwd: string; agentDir: string; trusted: boolean; skillNames: readonly string[] }): AgentSnapshot {
 	return buildAgentSnapshot(captureAgentSources(options), options.skillNames);
 }
