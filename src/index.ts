@@ -226,7 +226,7 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 						if (definition.tools.length > 0) session.setActiveToolsByName(evaluateToolAccess(definition.tools, session.getAllTools().map((tool) => tool.name)));
 						checkOpeningActive();
 						child = { session, cwd: ctx.cwd, nestedRegistry, queue: undefined as never, shutdown: shutdownSession };
-						child.queue = new ContinuationQueue(session, (request) => runChildRequest(child!, request.input, request.signal, request.onUpdate, request.theme, ctx.cwd));
+						child.queue = new ContinuationQueue((request) => runChildRequest(child!, request.input, request.signal, request.onUpdate, request.theme, ctx.cwd), session);
 						checkOpeningActive();
 						registry.add(child);
 						// From registration on, the queue owns cancellation semantics. The caller

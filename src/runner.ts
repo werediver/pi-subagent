@@ -47,6 +47,7 @@ export async function runChildRequest(child: ChildSession, input: string, signal
 	const startIndex = child.session.messages.length;
 	const unsubscribe = child.session.subscribe((event) => {
 		switch (event.type) {
+			case "agent_start": if (signal.aborted) abort(); break;
 			case "turn_start": turns++; emitProgress(); break;
 			case "message_start": if (event.message.role === "assistant") { lastProgressText = undefined; emitProgress(); } break;
 			case "message_update": if (event.message.role === "assistant") { const partial = "partial" in event.assistantMessageEvent ? event.assistantMessageEvent.partial : event.message; const text = getAssistantProgressText(partial); if (text) lastProgressText = text; emitProgress(); } break;
@@ -84,8 +85,8 @@ export async function runChildRequest(child: ChildSession, input: string, signal
 			}
 		}
 	});
-	let abortCleanup: Promise<void> | undefined;
-	const abort = () => { aborting = true; abortCleanup ??= child.session.abort().catch(() => { }); };
+	const abortCleanups: Promise<void>[] = [];
+	const abort = () => { aborting = true; abortCleanups.push(child.session.abort().catch(() => { })); };
 	if (signal.aborted) abort(); else signal.addEventListener("abort", abort, { once: true });
 	try {
 		await child.session.prompt(input);
@@ -94,7 +95,7 @@ export async function runChildRequest(child: ChildSession, input: string, signal
 		return resultError(aborting || signal.aborted ? "cancelled" : "failed", error instanceof Error ? error.message : String(error));
 	} finally {
 		signal.removeEventListener("abort", abort);
-		if (abortCleanup) await abortCleanup;
+		if (abortCleanups.length) await Promise.all(abortCleanups);
 		renderer?.clear();
 		unsubscribe();
 		activeTools.clear();

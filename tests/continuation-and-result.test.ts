@@ -29,7 +29,7 @@ test("initial request starts immediately and continuations run in order with the
 	const secondStarted = deferred<void>();
 	const batch = Symbol("turn");
 	const calls: QueuedRequest[] = [];
-	const queue = new ContinuationQueue(session(), async (req) => {
+	const queue = new ContinuationQueue(async (req) => {
 		calls.push(req);
 		if (req.input === "initial") return initial.promise;
 		if (req.input === "first") { firstStarted.resolve(undefined); return first.promise; }
@@ -54,8 +54,8 @@ test("initial request starts immediately and continuations run in order with the
 test("different queues can run concurrently", async () => {
 	const blocked = deferred<DelegateCmdResult>();
 	const batch = Symbol("turn");
-	const one = new ContinuationQueue(session(), () => blocked.promise);
-	const two = new ContinuationQueue(session(), async (req) => completed(req.input));
+	const one = new ContinuationQueue(() => blocked.promise);
+	const two = new ContinuationQueue(async (req) => completed(req.input));
 	const pending = one.startInitial(request("blocked"), batch);
 	assert.deepEqual(await two.enqueue(request("independent"), batch), completed("independent"));
 	blocked.resolve(completed("done"));
@@ -69,7 +69,7 @@ test("failure or cancellation breaks the queued batch, but a later batch can run
 			const failedTurn = Symbol("failed-turn");
 			const laterTurn = Symbol("later-turn");
 			const calls: Array<[string, symbol]> = [];
-			const queue = new ContinuationQueue(session(), async (req) => {
+			const queue = new ContinuationQueue(async (req) => {
 				calls.push([req.input, req.batch]);
 				return req.input === "bad" ? gate.promise : completed(req.input);
 			});
@@ -93,7 +93,7 @@ test("failure stays sticky after the queue empties until the turn changes", asyn
 	const failedTurn = Symbol("failed-turn");
 	const laterTurn = Symbol("later-turn");
 	const calls: string[] = [];
-	const queue = new ContinuationQueue(session(), async (req) => {
+	const queue = new ContinuationQueue(async (req) => {
 		calls.push(req.input);
 		return req.input === "bad" ? resultError("failed", "continuation failed") : completed(req.input);
 	});
@@ -108,7 +108,7 @@ test("an ordered failure marker sticks to its batch and later batches can reuse 
 	const batch = Symbol("invalid-turn");
 	const laterBatch = Symbol("later-turn");
 	const calls: string[] = [];
-	const queue = new ContinuationQueue(session(), async (req) => {
+	const queue = new ContinuationQueue(async (req) => {
 		calls.push(req.input);
 		return req.input === "initial" ? initialGate.promise : completed(req.input);
 	});
@@ -137,7 +137,7 @@ test("an ordered failure marker sticks to its batch and later batches can reuse 
 test("a failure marker is skipped when an earlier same-batch request failed", async () => {
 	const batch = Symbol("failed-turn");
 	const laterBatch = Symbol("later-turn");
-	const queue = new ContinuationQueue(session(), async (req) => req.input === "bad"
+	const queue = new ContinuationQueue(async (req) => req.input === "bad"
 		? resultError("failed", "earlier failure")
 		: completed(req.input));
 	assert.deepEqual(await queue.enqueue(request("bad"), batch), resultError("failed", "earlier failure"));
@@ -146,7 +146,7 @@ test("a failure marker is skipped when an earlier same-batch request failed", as
 });
 
 test("failure markers honor abort and close", async () => {
-	const queue = new ContinuationQueue(session(), async (req) => completed(req.input));
+	const queue = new ContinuationQueue(async (req) => completed(req.input));
 	const controller = new AbortController();
 	controller.abort();
 	const batch = Symbol("aborted-turn");
@@ -162,7 +162,7 @@ test("a failed continuation skips later continuations but preserves the queue fo
 	const batch = Symbol("failed-turn");
 	const laterBatch = Symbol("later-turn");
 	const calls: string[] = [];
-	const queue = new ContinuationQueue(session(), async (req) => {
+	const queue = new ContinuationQueue(async (req) => {
 		calls.push(req.input);
 		if (req.input === "bad") { started.resolve(undefined); return gate.promise; }
 		return completed(req.input);
@@ -183,7 +183,7 @@ test("a continuation aborted while waiting does not run and breaks its batch", a
 	const batch = Symbol("turn");
 	const laterBatch = Symbol("later-turn");
 	const calls: string[] = [];
-	const queue = new ContinuationQueue(session(), async (req) => {
+	const queue = new ContinuationQueue(async (req) => {
 		calls.push(req.input);
 		return req.input === "initial" ? gate.promise : completed(req.input);
 	});
@@ -200,24 +200,31 @@ test("a continuation aborted while waiting does not run and breaks its batch", a
 	assert.deepEqual(calls, ["initial", "later"]);
 });
 
-test("a rejected active request is classified as cancelled if its signal was aborted", async () => {
+test("caller cancellation aborts only the active operation scope and classifies rejection", async () => {
 	const gate = deferred<DelegateCmdResult>();
 	const controller = new AbortController();
-	const queue = new ContinuationQueue(session(), () => gate.promise);
+	let scopedSignal: AbortSignal | undefined;
+	const queue = new ContinuationQueue((req) => { scopedSignal = req.signal; return gate.promise; });
 	const active = queue.startInitial(request("active", controller.signal), Symbol("turn"));
+	assert.ok(scopedSignal);
+	assert.notEqual(scopedSignal, controller.signal);
 	controller.abort();
+	assert.equal(scopedSignal.aborted, true);
 	gate.reject(new Error("abort failed"));
 	assert.deepEqual(await active, resultError("cancelled", "abort failed"));
 });
 
-test("close aborts once, rejects queued and future work, and waits for abort and active work", async () => {
+test("close aborts the active scope, rejects queued and future work, and waits for active cleanup", async () => {
 	const activeGate = deferred<DelegateCmdResult>();
-	const abortGate = deferred<void>();
-	let aborts = 0;
+	const cleanupStarted = deferred<void>();
+	const cleanupGate = deferred<void>();
 	const calls: string[] = [];
-	const queue = new ContinuationQueue(session(() => { aborts++; return abortGate.promise; }), async (req) => {
+	let activeSignal: AbortSignal | undefined;
+	const queue = new ContinuationQueue((req) => {
 		calls.push(req.input);
-		return activeGate.promise;
+		activeSignal = req.signal;
+		req.signal.addEventListener("abort", () => cleanupStarted.resolve(undefined), { once: true });
+		return activeGate.promise.then(async (result) => { await cleanupGate.promise; return result; });
 	});
 	const batch = Symbol("turn");
 	const active = queue.startInitial(request("active"), batch);
@@ -225,13 +232,13 @@ test("close aborts once, rejects queued and future work, and waits for abort and
 	let closed = false;
 	const closing = queue.close().then(() => { closed = true; });
 	const closingAgain = queue.close();
-	assert.equal(aborts, 1);
-	assert.equal(closed, false);
-	abortGate.reject(new Error("abort error is ignored"));
-	// Give close's rejection handler and tail wait time to run without timers.
-	for (let i = 0; i < 5; i++) await Promise.resolve();
+	assert.equal(activeSignal?.aborted, true);
+	await cleanupStarted.promise;
 	assert.equal(closed, false);
 	activeGate.resolve(completed("finished"));
+	await Promise.resolve();
+	assert.equal(closed, false, "close still waits for active prompt cleanup");
+	cleanupGate.resolve(undefined);
 	assert.deepEqual(await active, completed("finished"));
 	assert.deepEqual(await waiting, resultError("cancelled", "Child session was closed."));
 	await Promise.all([closing, closingAgain]);
@@ -239,24 +246,6 @@ test("close aborts once, rejects queued and future work, and waits for abort and
 	assert.deepEqual(calls, ["active"]);
 	assert.deepEqual(await queue.startInitial(request("after close"), Symbol("after-close")), resultError("cancelled", "Child session was closed."));
 	assert.deepEqual(await queue.enqueue(request("afterwards"), Symbol("after-close")), resultError("cancelled", "Child session was closed."));
-});
-
-test("close also waits for abort after active and queued requests settle", async () => {
-	const activeGate = deferred<DelegateCmdResult>();
-	const abortGate = deferred<void>();
-	const queue = new ContinuationQueue(session(() => abortGate.promise), () => activeGate.promise);
-	const batch = Symbol("turn");
-	const active = queue.startInitial(request("active"), batch);
-	const waiting = queue.enqueue(request("waiting"), batch);
-	let closed = false;
-	const closing = queue.close().then(() => { closed = true; });
-	activeGate.resolve(completed("done"));
-	assert.deepEqual(await active, completed("done"));
-	assert.deepEqual(await waiting, resultError("cancelled", "Child session was closed."));
-	assert.equal(closed, false);
-	abortGate.resolve(undefined);
-	await closing;
-	assert.equal(closed, true);
 });
 
 test("result envelope escapes content, omits inappropriate fields, and sets error metadata", () => {
@@ -295,7 +284,7 @@ test("outcome uses the last assistant message, maps stop reasons and extracts te
 
 function child(id: string, events: string[], abort: () => Promise<void> = async () => {}): ChildSession {
 	const childSession = session(async () => { events.push(`abort:${id}`); await abort(); }, () => { events.push(`dispose:${id}`); }, id);
-	return { session: childSession, cwd: "/", queue: new ContinuationQueue(childSession, async () => completed("unused")), nestedRegistry: new ChildRegistry() };
+	return { session: childSession, cwd: "/", queue: new ContinuationQueue(async () => completed("unused"), childSession), nestedRegistry: new ChildRegistry() };
 }
 
 test("registry removal is identity-safe and shutdown disposes nested children before parents once", async () => {
@@ -407,7 +396,10 @@ test("registry close aborts and disposes a child while its opening operation set
 	}, () => { events.push("dispose:opening"); }, "opening");
 	const child: ChildSession = {
 		session: childSession, cwd: "/",
-		queue: new ContinuationQueue(childSession, () => active.promise),
+		queue: new ContinuationQueue((request) => {
+			request.signal.addEventListener("abort", () => { void childSession.abort(); }, { once: true });
+			return active.promise;
+		}, childSession),
 		nestedRegistry: new ChildRegistry(),
 		shutdown: async () => { events.push("shutdown:opening"); },
 	};
