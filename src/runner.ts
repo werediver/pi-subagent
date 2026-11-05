@@ -5,7 +5,7 @@ import { getDelegateOutcome, resultError, type DelegateCmdResult } from "./resul
 import { oneLine, sanitizeDisplayText } from "./text.ts";
 
 type ActiveTool = { toolName: string; args: unknown; display?: string; toolText?: string };
-type DelegateCmdProgress = { status: "running"; text?: string; currentTool?: string; currentToolArgs?: unknown; currentToolDisplay?: string; toolText?: string; turns: number };
+type DelegateCmdProgress = { text?: string; currentTool?: string; currentToolArgs?: unknown; currentToolDisplay?: string; toolText?: string; turns: number };
 
 function formatToolArgs(args: unknown): string {
 	if (!args || typeof args !== "object") return "";
@@ -40,7 +40,7 @@ export async function runChildRequest(child: ChildSession, input: string, signal
 	const emitProgress = () => {
 		const current = getCurrentTool();
 		onUpdate?.({
-			content: [{ type: "text", text: formatProgress({ status: "running", text: lastProgressText, currentTool: current?.toolName, currentToolArgs: current?.args, currentToolDisplay: current?.display, toolText: current?.toolText, turns }) }],
+			content: [{ type: "text", text: formatProgress({ text: lastProgressText, currentTool: current?.toolName, currentToolArgs: current?.args, currentToolDisplay: current?.display, toolText: current?.toolText, turns }) }],
 			details: { status: "running", text: lastProgressText, currentTool: current?.toolName, currentToolArgs: current?.args, currentToolDisplay: current?.display, toolText: current?.toolText, turns, activeTools: [...activeTools.entries()].map(([toolCallId, tool]) => ({ toolCallId, toolName: tool.toolName, args: tool.args, display: tool.display, toolText: tool.toolText })) },
 		});
 	};
@@ -55,7 +55,6 @@ export async function runChildRequest(child: ChildSession, input: string, signal
 				const display = renderer?.renderCall(event.toolCallId, event.toolName, event.args);
 				activeTools.set(event.toolCallId, { toolName: event.toolName, args: event.args, display });
 				currentToolCallId = event.toolCallId;
-				activeTools.get(event.toolCallId)!.toolText = undefined;
 				emitProgress();
 				break;
 			}

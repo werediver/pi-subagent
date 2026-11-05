@@ -1,5 +1,6 @@
 import type { AgentSession, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences, type Component } from "@earendil-works/pi-tui";
+import type { Component } from "@earendil-works/pi-tui";
+import { sanitizeDisplayText } from "./text.ts";
 
 type ToolCallRendererState = {
 	state: Record<string, unknown>;
@@ -15,7 +16,7 @@ function disposeComponent(component: Component | undefined, disposed = new Set<C
 }
 
 function cleanRenderedLines(lines: readonly string[]): string {
-	const cleaned = lines.map((line) => stripTerminalSequences(line).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, ""));
+	const cleaned = lines.map(sanitizeDisplayText);
 	let start = 0;
 	let end = cleaned.length;
 	while (start < end && cleaned[start].trim() === "") start++;
