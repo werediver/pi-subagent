@@ -225,8 +225,13 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 						// Startup handlers may register more tools; apply restrictions after binding.
 						if (definition.tools.length > 0) session.setActiveToolsByName(evaluateToolAccess(definition.tools, session.getAllTools().map((tool) => tool.name)));
 						checkOpeningActive();
-						child = { session, cwd: ctx.cwd, nestedRegistry, queue: undefined as never, shutdown: shutdownSession };
-						child.queue = new ContinuationQueue((request) => runChildRequest(child!, request.input, request.signal, request.onUpdate, request.theme, ctx.cwd), session);
+						child = {
+							session,
+							cwd: ctx.cwd,
+							nestedRegistry,
+							queue: new ContinuationQueue((request) => runChildRequest(child!, request.input, request.signal, request.onUpdate, request.theme, ctx.cwd), session),
+							shutdown: shutdownSession,
+						};
 						checkOpeningActive();
 						registry.add(child);
 						// From registration on, the queue owns cancellation semantics. The caller

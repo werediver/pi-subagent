@@ -32,7 +32,7 @@ function getToolProgressText(result: unknown): string {
 }
 
 export async function runChildRequest(child: ChildSession, input: string, signal: AbortSignal, onUpdate: AgentToolUpdateCallback | undefined, theme: Theme | undefined, cwd: string): Promise<DelegateCmdResult> {
-	let aborting = false, turns = 0, lastProgressText: string | undefined;
+	let turns = 0, lastProgressText: string | undefined;
 	const activeTools = new Map<string, ActiveTool>();
 	let currentToolCallId: string | undefined;
 	const renderer = theme ? new SubagentToolCallRenderer(child.session, theme, cwd) : undefined;
@@ -85,13 +85,13 @@ export async function runChildRequest(child: ChildSession, input: string, signal
 		}
 	});
 	const abortCleanups: Promise<void>[] = [];
-	const abort = () => { aborting = true; abortCleanups.push(child.session.abort().catch(() => { })); };
+	const abort = () => { abortCleanups.push(child.session.abort().catch(() => { })); };
 	if (signal.aborted) abort(); else signal.addEventListener("abort", abort, { once: true });
 	try {
 		await child.session.prompt(input);
-		return getDelegateOutcome(child.session.messages.slice(startIndex), aborting || signal.aborted);
+		return getDelegateOutcome(child.session.messages.slice(startIndex), signal.aborted);
 	} catch (error) {
-		return resultError(aborting || signal.aborted ? "cancelled" : "failed", error instanceof Error ? error.message : String(error));
+		return resultError(signal.aborted ? "cancelled" : "failed", error instanceof Error ? error.message : String(error));
 	} finally {
 		signal.removeEventListener("abort", abort);
 		if (abortCleanups.length) await Promise.all(abortCleanups);
