@@ -164,6 +164,8 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 			}
 			const validationError = getValidationError();
 			if (validationError) return createDelegateToolResult(resultError("failed", validationError));
+			if (abortSignal.aborted) return createDelegateToolResult(resultError("cancelled", "Delegation was cancelled."));
+			if (registry.isClosed()) return createDelegateToolResult(resultError("failed", "The extension runtime is shutting down."));
 
 			const rootContext = root.context;
 			const rootModel = rootContext.model ? { model: rootContext.model, thinkingLevel: rootContext.thinkingLevel } : undefined;
@@ -182,46 +184,67 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 				return createDelegateToolResult(resultError("failed", error instanceof Error ? error.message : String(error)));
 			}
 			try {
-				const result = await registry.trackOpening(async () => {
+				let setupFinished = false;
+				let finishSetup!: () => void;
+				const setupReady = new Promise<void>((resolve) => {
+					finishSetup = () => {
+						if (setupFinished) return;
+						setupFinished = true;
+						resolve();
+					};
+				});
+				let resolveSetupCancellation!: () => void;
+				const setupCancellation = new Promise<"cancelled">((resolve) => { resolveSetupCancellation = () => resolve("cancelled"); });
+				const onAbortDuringSetup = () => { if (!setupFinished) resolveSetupCancellation(); };
+				const opening = registry.trackOpening(async () => {
 					const nestedRegistry = new ChildRegistry();
 					let child: ChildSession | undefined;
 					let createdSession: AgentSession | undefined;
 					let shutdownSession: (() => Promise<void>) | undefined;
+					const checkOpeningActive = () => {
+						if (abortSignal.aborted) throw new Error("Delegation was cancelled.");
+						if (registry.isClosed()) throw new Error("The extension runtime is shutting down.");
+					};
 					try {
-						const setup = (async () => {
-							// The root catalog includes hidden and extension-provided skills, which may
-							// not yet be present during a child resource loader's initial reload.
-							const preloadedSkills = resolvePreloadedSkills(root.skills!, definition.skills.preload);
-							const resourceLoader = new DefaultResourceLoader({
-								cwd: ctx.cwd,
-								agentDir: getAgentDir(),
-								extensionsOverride: (current) => ({ ...current, extensions: current.extensions.filter((extension) => extension.path !== sourcePath && extension.resolvedPath !== sourcePath) }),
-								extensionFactories: [{ name: "pi-subagent", factory: createExtensionFactory(root, nestedRegistry, sourcePath, subordinationLevel), hidden: true }],
-								noPromptTemplates: true,
-								noThemes: true,
-								// Preserve all skills for explicit /skill:name expansion. Pi uses this
-								// flag only to exclude entries from the automatic prompt catalog.
-								skillsOverride: definition.skills.allowDiscovery ? undefined : (current) => ({
-									...current, skills: current.skills.map((skill) => ({ ...skill, disableModelInvocation: true })),
-								}),
-								appendSystemPromptOverride: (current) => [...current, ...(definition.prompt.trim() ? [definition.prompt] : []), ...(preloadedSkills.length ? [formatPreloadedSkills(preloadedSkills)] : [])],
-							});
-							await resourceLoader.reload();
-							if (registry.isClosed()) throw new Error("The extension runtime is shutting down.");
-							const { session } = await createAgentSession({ cwd: ctx.cwd, model: resolvedModel.model, thinkingLevel: resolvedModel.thinkingLevel, resourceLoader, sessionManager: SessionManager.inMemory(ctx.cwd) });
-							createdSession = session;
-							shutdownSession = async () => { await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); };
-							// Bind before the first turn so extension-provided resources are discovered.
-							await session.bindExtensions({ mode: "print", onError: (error) => console.warn(`Child extension ${error.extensionPath} (${error.event}): ${error.error}`) });
-							// Startup handlers may register more tools; apply restrictions after binding.
-							if (definition.tools.length > 0) session.setActiveToolsByName(evaluateToolAccess(definition.tools, session.getAllTools().map((tool) => tool.name)));
-							if (registry.isClosed()) throw new Error("The extension runtime is shutting down.");
-							child = { session, cwd: ctx.cwd, nestedRegistry, queue: undefined as never, shutdown: shutdownSession };
-							child.queue = new ContinuationQueue(session, (request) => runChildRequest(child!, request.input, request.signal, request.onUpdate, request.theme, ctx.cwd));
-							registry.add(child);
-						})();
-						await setup;
-						if (!child) throw new Error("Child session setup did not produce a session.");
+						checkOpeningActive();
+						// The root catalog includes hidden and extension-provided skills, which may
+						// not yet be present during a child resource loader's initial reload.
+						const preloadedSkills = resolvePreloadedSkills(root.skills!, definition.skills.preload);
+						const resourceLoader = new DefaultResourceLoader({
+							cwd: ctx.cwd,
+							agentDir: getAgentDir(),
+							extensionsOverride: (current) => ({ ...current, extensions: current.extensions.filter((extension) => extension.path !== sourcePath && extension.resolvedPath !== sourcePath) }),
+							extensionFactories: [{ name: "pi-subagent", factory: createExtensionFactory(root, nestedRegistry, sourcePath, subordinationLevel), hidden: true }],
+							noPromptTemplates: true,
+							noThemes: true,
+							// Preserve all skills for explicit /skill:name expansion. Pi uses this
+							// flag only to exclude entries from the automatic prompt catalog.
+							skillsOverride: definition.skills.allowDiscovery ? undefined : (current) => ({
+								...current, skills: current.skills.map((skill) => ({ ...skill, disableModelInvocation: true })),
+							}),
+							appendSystemPromptOverride: (current) => [...current, ...(definition.prompt.trim() ? [definition.prompt] : []), ...(preloadedSkills.length ? [formatPreloadedSkills(preloadedSkills)] : [])],
+						});
+						// Pi's setup APIs accept no AbortSignal: these checkpoints are cooperative,
+						// and the tracked opening/shutdown must await any in-flight stage.
+						await resourceLoader.reload();
+						checkOpeningActive();
+						const { session } = await createAgentSession({ cwd: ctx.cwd, model: resolvedModel.model, thinkingLevel: resolvedModel.thinkingLevel, resourceLoader, sessionManager: SessionManager.inMemory(ctx.cwd) });
+						createdSession = session;
+						shutdownSession = async () => { await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); };
+						checkOpeningActive();
+						// Bind before the first turn so extension-provided resources are discovered.
+						await session.bindExtensions({ mode: "print", onError: (error) => console.warn(`Child extension ${error.extensionPath} (${error.event}): ${error.error}`) });
+						checkOpeningActive();
+						// Startup handlers may register more tools; apply restrictions after binding.
+						if (definition.tools.length > 0) session.setActiveToolsByName(evaluateToolAccess(definition.tools, session.getAllTools().map((tool) => tool.name)));
+						checkOpeningActive();
+						child = { session, cwd: ctx.cwd, nestedRegistry, queue: undefined as never, shutdown: shutdownSession };
+						child.queue = new ContinuationQueue(session, (request) => runChildRequest(child!, request.input, request.signal, request.onUpdate, request.theme, ctx.cwd));
+						checkOpeningActive();
+						registry.add(child);
+						// From registration on, the queue owns cancellation semantics. The caller
+						// must not race the initial request result against its signal anymore.
+						finishSetup();
 						const result = await child.queue.startInitial({ input: params.input, signal: abortSignal, onUpdate, theme: ctx.ui.theme }, batch);
 						if (result.status !== "completed") { registry.remove(child.session.sessionId, child); await disposeChild(child); return result; }
 						result.sessionId = child.session.sessionId;
@@ -238,8 +261,18 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 							}
 						} catch (cleanupError) { console.warn(`Could not fully clean up a child session: ${String(cleanupError)}`); }
 						return resultError(abortSignal.aborted ? "cancelled" : "failed", error instanceof Error ? error.message : String(error));
-					}
+					} finally { finishSetup(); }
 				});
+				abortSignal.addEventListener("abort", onAbortDuringSetup, { once: true });
+				if (abortSignal.aborted) onAbortDuringSetup();
+				const setupOutcome = await Promise.race([
+					setupReady.then(() => "ready" as const),
+					opening.then(() => "finished" as const, () => "finished" as const),
+					setupCancellation,
+				]);
+				abortSignal.removeEventListener("abort", onAbortDuringSetup);
+				if (setupOutcome === "cancelled") return createDelegateToolResult(resultError("cancelled", "Delegation was cancelled."));
+				const result = await opening;
 				return createDelegateToolResult(result);
 			} catch (error) {
 				return createDelegateToolResult(resultError(abortSignal.aborted ? "cancelled" : "failed", error instanceof Error ? error.message : String(error)));

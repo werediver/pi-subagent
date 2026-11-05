@@ -10,7 +10,7 @@ A continuation delegation specifies `continue_session` with a previously returne
 
 ## Session lifetime
 
-Child sessions are retained in memory for the lifetime of the current extension runtime. They are process-local handles rather than durable identifiers. Extension reload cancels active work, discards queued work, disposes child sessions, and invalidates their IDs. Persistent child sessions and indefinite retention are future work.
+Child sessions are retained in memory for the lifetime of the current extension runtime. They are process-local handles rather than durable identifiers. Extension reload cancels active work, discards queued work, disposes child sessions, and invalidates their IDs. Cancellation of an opening is reported promptly, but Pi’s resource reload, session creation, and extension binding do not accept cancellation signals. An in-flight setup stage may therefore continue; the extension stops before subsequent stages and cleans up after that stage settles, while runtime shutdown waits for the tracked opening. Persistent child sessions and indefinite retention are future work.
 
 ## Continuation ordering
 

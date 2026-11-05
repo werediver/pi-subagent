@@ -46,6 +46,6 @@ export function createExtensionHarness(factory: (pi: ExtensionAPI) => void = reg
 			const event = { type: "before_agent_start", prompt: "test", systemPrompt, systemPromptOptions: { selectedTools, skills } } as BeforeAgentStartEvent;
 			return handler(event, ctx);
 		},
-		execute: (ctx: ExtensionContext, params: DelegateCmdParams) => delegate.execute("test-call", params, undefined, undefined, ctx),
+		execute: (ctx: ExtensionContext, params: DelegateCmdParams, signal?: AbortSignal) => delegate.execute("test-call", params, signal, undefined, ctx),
 	};
 }
