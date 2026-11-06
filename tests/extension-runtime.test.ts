@@ -43,7 +43,7 @@ function failure(result: { details: unknown }): string {
 	return details.error;
 }
 
-test("on-disk subagent.json files have no effect and produce no warnings", withSandbox(async (project, agentDir) => {
+test("on-disk subagent.json files have no effect and unresolved models are warned", withSandbox(async (project, agentDir) => {
 	writeAgent(agentDir, "worker.md", "---\nname: worker\nmodel: configured-name\n---\nBody");
 	writeConfig(agentDir, { agentPresets: { "configured-name": { model: "global-target" } } });
 	writeConfig(join(project, CONFIG_DIR_NAME), { agentPresets: { "configured-name": { model: "project-target" } } });
@@ -57,7 +57,68 @@ test("on-disk subagent.json files have no effect and produce no warnings", withS
 	try {
 		harness.beforeStart(ctx, ["delegate"]);
 		assert.match(failure(await harness.execute(ctx, { title: "test", input: "test", agent: "worker" })), /"root-provider"\/"configured-name"/);
-		assert.equal(notifications.length, 0);
+		assert.equal(notifications.length, 1);
+		assert.match(notifications[0].message, /worker\.md.*agent "worker"/);
+		assert.match(notifications[0].message, /"root-provider"\/"configured-name"/);
+	} finally { await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx); }
+}));
+
+test("session_start preflight reports structural and model issues but defers missing skills", withSandbox(async (project, agentDir) => {
+	const malformed = join(agentDir, "agents", "malformed.md");
+	const worker = join(agentDir, "agents", "worker.md");
+	writeAgent(agentDir, "malformed.md", "---\nname: malformed\nmystery: true\nmodel: { id: [not-a-string] }\n---\nBody");
+	writeAgent(agentDir, "worker.md", "---\nname: worker\nmodel: unavailable-id\n---\nBody");
+	writeAgent(agentDir, "skill.md", "---\nname: skill-user\nmodel: skill-model\nskills: { preload: [not-loaded] }\n---\nBody");
+	const { ctx, notifications } = fakeContext(project, [fakeModel("root-provider", "root")]);
+	const harness = createExtensionHarness();
+	await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+	try {
+		assert.equal(notifications.length, 4);
+		assert.ok(notifications.some(({ message }) => message.includes(malformed) && /unknown frontmatter field.*mystery/.test(message)));
+		assert.ok(notifications.some(({ message }) => message.includes(malformed) && /model\.id.*non-empty string/.test(message)));
+		const modelWarning = notifications.find(({ message }) => message.includes(worker));
+		assert.ok(modelWarning);
+		assert.equal(modelWarning.level, "warning");
+		assert.match(modelWarning.message, /agent "worker"/);
+		assert.match(modelWarning.message, /"root-provider"\/"unavailable-id"/);
+		assert.ok(!notifications.some(({ message }) => message.includes("not-loaded")), "skill names cannot be checked before discovery");
+		const skillModelWarning = notifications.find(({ message }) => message.includes("skill.md"));
+		assert.ok(skillModelWarning);
+		assert.match(skillModelWarning.message, /agent "skill-user"/);
+		assert.match(skillModelWarning.message, /"root-provider"\/"skill-model"/);
+
+		harness.beforeStart(ctx, []);
+		assert.equal(notifications.length, 5);
+		assert.ok(notifications.some(({ message }) => message.includes("skill.md") && /unknown preloaded skill.*not-loaded/.test(message)));
+		harness.beforeStart(ctx, []);
+		assert.equal(notifications.length, 5, "preflight warnings and deferred diagnostics are not repeated");
+	} finally { await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx); }
+}));
+
+test("project preload failure does not claim a duplicate name or model warning before final precedence", withSandbox(async (project, agentDir) => {
+	const projectAgents = join(project, CONFIG_DIR_NAME, "agents");
+	mkdirSync(projectAgents, { recursive: true });
+	const projectFile = join(projectAgents, "shared.md");
+	const userFile = join(agentDir, "agents", "shared.md");
+	mkdirSync(join(agentDir, "agents"), { recursive: true });
+	writeFileSync(projectFile, "---\nname: shared\nmodel: project-model\nskills: { preload: [not-loaded] }\n---\nProject");
+	writeFileSync(userFile, "---\nname: shared\nmodel: user-model\n---\nUser");
+	const { ctx, notifications } = fakeContext(project, [fakeModel("root-provider", "root")]);
+	const harness = createExtensionHarness();
+	await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+	try {
+		assert.equal(notifications.length, 0, "winner and model warning are uncertain until preload validation");
+		harness.beforeStart(ctx, []);
+		assert.equal(notifications.length, 2);
+		assert.ok(notifications.some(({ message }) => message.includes(projectFile) && /unknown preloaded skill.*not-loaded/.test(message)));
+		const modelWarning = notifications.find(({ message }) => message.includes(userFile));
+		assert.ok(modelWarning);
+		assert.match(modelWarning.message, /agent "shared"/);
+		assert.match(modelWarning.message, /"root-provider"\/"user-model"/);
+		assert.ok(!notifications.some(({ message }) => message.includes(projectFile) && /None of the model candidates/.test(message)));
+		assert.ok(!notifications.some(({ message }) => /duplicate agent name "shared"/.test(message)));
+		const error = failure(await harness.execute(ctx, { title: "test", input: "test", agent: "shared" }));
+		assert.match(error, /"root-provider"\/"user-model"/);
 	} finally { await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx); }
 }));
 
@@ -88,24 +149,30 @@ test("root snapshots definitions once, validates against full skills, and refres
 	const hidden = { name: "hidden", disableModelInvocation: true } as Skill;
 	const first = createExtensionHarness();
 	await first.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+	assert.equal(notifications.length, 2, "structural and independent model diagnostics are reported during startup preflight");
+	assert.match(notifications[0].message, /agent\.md.*unknown frontmatter field/);
+	assert.match(notifications[1].message, /agent\.md.*agent "first".*original-model/);
+	assert.doesNotMatch(notifications.join("\n"), /old-missing/);
 	// Changes after session startup, but before the first turn, require reload.
 	writeFileSync(definition, "---\nname: second\nskills: { preload: [missing] }\n---\n");
 	// Validation completes after resource discovery even when delegate is inactive.
 	assert.equal(first.beforeStart(ctx, [], "prompt", [hidden]), undefined);
-	assert.equal(notifications.length, 1);
-	assert.match(notifications[0].message, /agent\.md.*unknown/);
+	assert.equal(notifications.length, 2, "preflight model warnings are not repeated after the catalog validates");
 	first.beforeStart(ctx, ["delegate"], "prompt", []);
 	const request = { title: "test", input: "test" };
 	assert.match(failure(await first.execute(ctx, { ...request, agent: "first" })), /original-model/);
 	assert.match(failure(await first.execute(ctx, { ...request, agent: "second" })), /unknown agent/i);
-	assert.equal(notifications.length, 1, "no rescanning or duplicate warnings");
+	assert.equal(notifications.length, 2, "no rescanning or duplicate warnings");
 	await first.emit("session_shutdown", { type: "session_shutdown" }, ctx);
 	const next = createExtensionHarness();
+	await next.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+	assert.equal(notifications.length, 2, "missing skill names are deferred until the full catalog is available");
+	next.beforeStart(ctx, [], "prompt", []);
 	next.beforeStart(ctx, [], "prompt", []);
 	assert.match(failure(await next.execute(ctx, { ...request, agent: "first" })), /unknown agent/i);
 	assert.match(failure(await next.execute(ctx, { ...request, agent: "second" })), /unknown agent/i);
-	assert.equal(notifications.length, 2);
-	assert.match(notifications[1].message, /agent\.md.*unknown preloaded skill.*missing/);
+	assert.equal(notifications.length, 3);
+	assert.match(notifications[2].message, /agent\.md.*unknown preloaded skill.*missing/);
 	await next.emit("session_shutdown", { type: "session_shutdown" }, ctx);
 }));
 

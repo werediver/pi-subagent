@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAgentSnapshot, captureAgentSources, discoverAgentSnapshot } from "../src/agent-definitions.ts";
+import { buildAgentSnapshot, captureAgentSources, discoverAgentSnapshot, preflightAgentSources } from "../src/agent-definitions.ts";
 import { evaluateToolAccess } from "../src/tool-access.ts";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 
@@ -60,6 +60,32 @@ test("model candidates normalize and candidate thinking levels are validated", (
 	assert.ok(thinkingDiagnostics.every(({ reason }) => /migrate model: x \+ thinkingLevel: high to model: \{ id: x, thinkingLevel: high \}/.test(reason)));
 	assert.ok(thinkingDiagnostics.every(({ reason }) => /model is omitted.*inherited unchanged/.test(reason)));
 }));
+
+test("preflight reports safe structural diagnostics and defers catalog-dependent winner decisions", () => {
+	const safeDuplicate = preflightAgentSources({ sources: [
+		{ filename: "first.md", content: "---\nname: duplicate\nmodel: first-model\n---\n" },
+		{ filename: "second.md", content: "---\nname: duplicate\nmodel: second-model\n---\n" },
+	] });
+	assert.deepEqual(safeDuplicate.modelDefinitions.map(({ filename }) => filename), ["first.md"]);
+	assert.deepEqual(safeDuplicate.diagnostics, [{ filename: "second.md", reason: 'duplicate agent name "duplicate" (ignored)' }]);
+
+	const uniqueCatalogDependent = preflightAgentSources({ sources: [
+		{ filename: "unique.md", content: "---\nname: unique\nmodel: unique-model\nskills: { preload: [missing] }\n---\n" },
+	] });
+	assert.deepEqual(uniqueCatalogDependent.modelDefinitions.map(({ filename }) => filename), ["unique.md"]);
+	assert.deepEqual(uniqueCatalogDependent.diagnostics, []);
+
+	const catalogDependent = { sources: [
+		{ filename: "project.md", content: "---\nname: shared\nmodel: project-model\nskills: { preload: [missing] }\n---\n" },
+		{ filename: "user.md", content: "---\nname: shared\nmodel: user-model\n---\n" },
+	] };
+	const early = preflightAgentSources(catalogDependent);
+	assert.deepEqual(early.diagnostics, []);
+	assert.deepEqual(early.modelDefinitions, []);
+	const final = buildAgentSnapshot(catalogDependent, []);
+	assert.deepEqual(final.definitions.map(({ filename }) => filename), ["user.md"]);
+	assert.deepEqual(final.diagnostics, [{ filename: "project.md", reason: 'unknown preloaded skill "missing"' }]);
+});
 
 test("unknown fields reported and ignored, nested skills and preload validated against full catalog", () => fixture(({ put, discover }) => {
 	const path = put("user", "a.md", agent("test", "mystery: true\nskills:\n  allowDiscovery: false\n  preload: [one, two]\n  future: x\n"));

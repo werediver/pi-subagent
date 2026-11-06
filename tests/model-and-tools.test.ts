@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Model } from "@earendil-works/pi-ai";
-import { AgentModelNotFoundError, formatAgentDigest, getAgentAvailability, resolveAgentModel, type ModelSettings } from "../src/model-resolver.ts";
+import { AgentModelNotFoundError, AgentProviderAuthNotConfiguredError, formatAgentDigest, getAgentAvailability, resolveAgentModel, type ModelSettings } from "../src/model-resolver.ts";
 import { evaluateToolAccess } from "../src/tool-access.ts";
 import { buildAgentSnapshot, type AgentDefinition } from "../src/agent-definitions.ts";
 
@@ -16,9 +16,16 @@ function model(provider: string, id: string): Model<"openai-completions"> {
 	};
 }
 
-// The resolver uses only getAll(); ModelRegistry is a concrete class with private state.
-function context(active: ModelSettings["model"] | undefined, models: Model<"openai-completions">[] = []): ModelContext {
-	const registry: Pick<ModelContext["modelRegistry"], "getAll"> = { getAll: () => models };
+// ModelRegistry is a concrete class with private state; provide only the resolver's registry methods.
+function context(
+	active: ModelSettings["model"] | undefined,
+	models: Model<"openai-completions">[] = [],
+	authConfigured: (provider: string) => boolean = () => true,
+): ModelContext {
+	const registry: Pick<ModelContext["modelRegistry"], "getAll" | "getProviderAuthStatus"> = {
+		getAll: () => models,
+		getProviderAuthStatus: (provider) => ({ configured: authConfigured(provider) }),
+	};
 	return { model: active, thinkingLevel: "low", modelRegistry: registry as ModelContext["modelRegistry"] };
 }
 
@@ -33,7 +40,7 @@ const allModels = [callerShared, rootShared, explicitShared, rootParentNamed, ro
 const rootSettings: ModelSettings = { model: rootModel, thinkingLevel: "high" };
 
 function agentDefinition(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
-	return { name: "tester", prompt: "", tools: [], skills: { allowDiscovery: true, preload: [] }, ...overrides };
+	return { filename: "tester.md", name: "tester", prompt: "", tools: [], skills: { allowDiscovery: true, preload: [] }, ...overrides };
 }
 
 const resolve = (definition: AgentDefinition, ctx: ModelContext, root: ModelSettings | undefined = rootSettings, registry = ctx.modelRegistry) =>
@@ -58,6 +65,65 @@ test("model candidates resolve in order with exact opaque provider and ID matchi
 	assert.deepEqual(resolveAgentModel(agentDefinition({ model: [{ id: "shared" }, { id: "shared", provider: "explicit-provider" }] }), context(undefined, allModels), undefined), { model: explicitShared });
 	const opaque = model("Provider/Name", "Models/ID");
 	assert.deepEqual(resolve(agentDefinition({ model: [{ id: "Models/ID", provider: "Provider/Name" }] }), context(undefined, [opaque]), undefined), { model: opaque });
+});
+
+test("explicit candidates skip unconfigured exact matches and diagnose only when all matches are unconfigured", () => {
+	const first = model("first-provider", "first-model");
+	const later = model("later-provider", "later-model");
+	const calls: string[] = [];
+	const ctx = context(rootModel, [first, later], (provider) => {
+		calls.push(provider);
+		return provider === "later-provider";
+	});
+	assert.deepEqual(resolve(agentDefinition({ model: [{ id: "later-model", provider: "later-provider" }] }), ctx), { model: later });
+	assert.deepEqual(calls, ["later-provider"]);
+
+	calls.length = 0;
+	assert.deepEqual(
+		resolve(agentDefinition({ model: [
+			{ id: "first-model", provider: "first-provider", thinkingLevel: "low" },
+			{ id: "later-model", provider: "later-provider", thinkingLevel: "xhigh" },
+		] }), ctx),
+		{ model: later, thinkingLevel: "xhigh" },
+		"a configured later candidate resolves with its own thinking level",
+	);
+	assert.deepEqual(calls, ["first-provider", "later-provider"]);
+
+	calls.length = 0;
+	const allUnconfigured = context(rootModel, [first, later], (provider) => { calls.push(provider); return false; });
+	assert.throws(
+		() => resolve(agentDefinition({ model: [
+			{ id: "first-model", provider: "first-provider" },
+			{ id: "missing-model", provider: "missing-provider" },
+			{ id: "later-model", provider: "later-provider" },
+		] }), allUnconfigured),
+		(error: unknown) => {
+			assert.ok(error instanceof AgentProviderAuthNotConfiguredError);
+			assert.match(error.message, /registered, but provider auth is not configured/);
+			assert.ok(error.message.includes("/login first-provider"));
+			assert.match(error.message, /pi auth check --provider first-provider/);
+			return true;
+		},
+	);
+	assert.deepEqual(calls, ["first-provider", "later-provider"], "all exact matches are checked before reporting provider auth");
+});
+
+test("explicit candidates with no exact registry matches remain model-not-found", () => {
+	assert.throws(
+		() => resolve(agentDefinition({ model: [{ id: "missing", provider: "first-provider" }, { id: "also-missing", provider: "later-provider" }] }), context(rootModel, [])),
+		(error: unknown) => {
+			assert.ok(error instanceof AgentModelNotFoundError);
+			assert.ok(!(error instanceof AgentProviderAuthNotConfiguredError));
+			return true;
+		},
+	);
+});
+
+test("inherited model resolution does not query provider auth", () => {
+	let authChecks = 0;
+	const ctx = context(callerModel, [], () => { authChecks++; return false; });
+	assert.deepEqual(resolve(agentDefinition(), ctx), { model: callerModel, thinkingLevel: "low" });
+	assert.equal(authChecks, 0);
 });
 
 test("mixed string and mapping entries resolve in their declared order", () => {
@@ -139,6 +205,7 @@ test("digest contains only safely formatted names and optional descriptions", ()
 		agentDefinition({ name: "plain", prompt: "OTHER_SECRET_BODY" }),
 	];
 	const digest = formatAgentDigest(definitions);
+	assert.doesNotMatch(formatAgentDigest([agentDefinition({ filename: "source-path.md" })]), /source-path/);
 	assert.equal(digest, [
 		"The following agents are available for the `delegate` tool. Set `agent` to one of these names.",
 		"<delegate_agent_options>",

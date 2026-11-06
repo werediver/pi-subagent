@@ -30,6 +30,7 @@ export default function (pi) {
       const lastUserIndex = context.messages.findLastIndex(m => m.role === "user");
       const turnResults = context.messages.slice(lastUserIndex + 1).filter(m => m.role === "toolResult");
       log({ type: "request", provider: model.provider, model: model.id, reasoning: options?.reasoning, systemPrompt: context.systemPrompt, users, results, turnResults, tools: (context.tools || []).map(t => t.name) });
+      if (model.provider === "nested-test" && users.at(-1) === "fail after selection") throw new Error("intentional selected model failure");
       if (users.at(-1) === "fail continuation") throw new Error("intentional continuation failure");
       const message = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id,
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
@@ -121,13 +122,15 @@ test("nested sessions share the agent snapshot while root models remain live, un
 	putAgent("main", `model: { id: main, thinkingLevel: high }\n${leafRules}`, "MAIN-AGENT-BODY");
 	putAgent("dynamic", `model: { id: switch-target, thinkingLevel: medium }\n${leafRules}`, "DYNAMIC-AGENT-BODY");
 	putAgent("fallback", `model:\n  - { id: main, thinkingLevel: high }\n  - { id: alternate-model, provider: alternate-test, thinkingLevel: low }\n${leafRules}`, "FALLBACK-AGENT-BODY");
+	putAgent("no-request-fallback", `model:\n  - { id: main, provider: nested-test, thinkingLevel: high }\n  - { id: alternate-model, provider: alternate-test, thinkingLevel: low }\n${leafRules}`, "NO-REQUEST-FALLBACK-BODY");
 	putAgent("parent", `model: { id: parent, thinkingLevel: low }\n${leafRules}`, "PARENT-AGENT-BODY");
 	putAgent("inherit", leafRules, "INHERIT-AGENT-BODY");
+	putAgent("unavailable", `model: { id: registered-no-auth, provider: unconfigured-test }\n${leafRules}`, "UNAVAILABLE-AGENT-BODY");
 	writeFakeProvider(agentDir, logPath);
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	const harness = createExtensionHarness();
 	let reloadedHarness: ReturnType<typeof createExtensionHarness> | undefined;
-	const { ctx } = fakeContext(project);
+	const { ctx, notifications } = fakeContext(project);
 	// Avoid UI rendering in the headless test.
 	Object.defineProperty(ctx.ui, "theme", { value: undefined });
 	try {
@@ -143,12 +146,23 @@ test("nested sessions share the agent snapshot while root models remain live, un
 			baseUrl: "https://invalid.example", apiKey: "test-key", api: "alternate-test-api",
 			models: ["alternate-model", "switch-target", "parent", "main"].map(id => ({ id, name: id, reasoning: true, input: ["text" as const], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32768, maxTokens: 1024 })),
 		});
+		registry.registerProvider("unconfigured-test", {
+			baseUrl: "https://invalid.example", apiKey: "test-key", api: "unconfigured-test-api",
+			models: [{ id: "registered-no-auth", name: "Registered without auth", reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32768, maxTokens: 1024 }],
+		});
+		const getProviderAuthStatus = registry.getProviderAuthStatus.bind(registry);
+		registry.getProviderAuthStatus = (provider) => provider === "unconfigured-test" ? { configured: false } : getProviderAuthStatus(provider);
 		const model = registry.find("nested-test", "nested-model");
 		assert.ok(model);
 		Object.assign(ctx, { model, modelRegistry: registry });
 		// Build the static snapshot. Agent digests are deliberately not asserted:
 		// they are implemented in Phase 4, not the invocation migration.
 		harness.beforeStart(ctx, ["delegate"], "base prompt", rootSkills);
+		const unavailableWarnings = () => notifications.filter(({ message }) => message.includes('for agent "unavailable"'));
+		assert.equal(unavailableWarnings().length, 1);
+		assert.ok(unavailableWarnings()[0].message.includes(join(agentDir, "agents", "unavailable.md")));
+		assert.match(unavailableWarnings()[0].message, /registered, but provider auth is not configured/);
+		assert.doesNotMatch(unavailableWarnings()[0].message, /test-key/, "auth diagnostics do not expose credentials");
 		const missingAgent = (await harness.execute(ctx, { title: "Missing agent", input: "must not run" })).details as DelegateCmdResult;
 		assert.equal(missingAgent.status, "failed");
 		assert.match(missingAgent.error!, /agent/i);
@@ -161,6 +175,7 @@ test("nested sessions share the agent snapshot while root models remain live, un
 		assert.equal(initial.status, "completed", JSON.stringify(initial));
 		assert.ok(initial.sessionId);
 		assert.equal(initial.text, "child answer");
+		assert.equal(unavailableWarnings().length, 1, "nested before_agent_start checks do not duplicate auth warnings");
 		const [child, grandchild, childAfterTool] = requests();
 		assert.equal(records().filter(r => r.type === "factory").length, 2);
 		for (const request of [child, grandchild]) {
@@ -276,6 +291,14 @@ test("nested sessions share the agent snapshot while root models remain live, un
 			}
 		}
 
+		const selectedModelFailure = (await harness.execute(ctx, { title: "No request fallback", input: "fail after selection", agent: "no-request-fallback" })).details as DelegateCmdResult;
+		assert.equal(selectedModelFailure.status, "failed");
+		assert.match(selectedModelFailure.error!, /intentional selected model failure/);
+		const failedSelectedRequests = byPrompt("fail after selection");
+		assert.equal(failedSelectedRequests.length, 1, "a request failure after selection is not retried with a later candidate");
+		assert.equal(failedSelectedRequests[0].provider, "nested-test");
+		assert.equal(failedSelectedRequests[0].model, "main");
+
 		// A live root with no model must not fall back to the child's provider.
 		Object.assign(ctx, { model: undefined });
 		const missing = (await harness.execute(ctx, { title: "No root", input: "no root model", continue_session: initial.sessionId })).details as DelegateCmdResult;
@@ -308,6 +331,7 @@ test("nested sessions share the agent snapshot while root models remain live, un
 		Object.assign(ctx, { model: alternate, thinkingLevel: "high" });
 		reloadedHarness = createExtensionHarness();
 		reloadedHarness.beforeStart(ctx, ["delegate"], "base prompt", rootSkills);
+		assert.equal(unavailableWarnings().length, 2, "a fresh root snapshot starts a new warning period");
 		const stale = (await reloadedHarness.execute(ctx, { title: "Old ID", input: "stale", continue_session: initial.sessionId })).details as DelegateCmdResult;
 		assert.equal(stale.status, "failed");
 		assert.match(stale.error!, /unknown, expired, or cwd-mismatched/);

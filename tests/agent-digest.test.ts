@@ -90,6 +90,134 @@ test("live provider changes update the digest and openings without rebuilding th
 	}
 }));
 
+test("unconfigured exact candidates warn through preflight, digest, and opening, then recover with warning dedupe", withSandbox(async (project, agentDir) => {
+	const filename = join(agentDir, "agents", "worker.md");
+	writeFileSync(filename, "---\nname: worker\nmodel:\n  - { id: first-model, provider: first-provider }\n  - { id: later-model, provider: later-provider }\n---\nWorker body");
+	const root = fakeModel("root-provider", "root");
+	const first = fakeModel("first-provider", "first-model");
+	const later = fakeModel("later-provider", "later-model");
+	const { ctx, notifications, authStatuses } = fakeContext(project, [root, first, later]);
+	authStatuses.set("first-provider", false);
+	authStatuses.set("later-provider", false);
+	const harness = createExtensionHarness();
+	await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+	try {
+		assert.equal(notifications.length, 1, "startup preflight warns for registered model with missing provider auth");
+		assert.ok(notifications[0].message.includes(filename));
+		assert.match(notifications[0].message, /agent "worker"/);
+		assert.match(notifications[0].message, /registered, but provider auth is not configured/);
+		assert.ok(notifications[0].message.includes("/login first-provider"));
+		assert.match(notifications[0].message, /pi auth check --provider first-provider/);
+		assert.doesNotMatch(notifications[0].message, /secret|api.?key|token/i);
+		assert.equal(options(prompt(harness, ctx)), "", "agent with unconfigured auth is omitted from digest");
+		const openingError = failure(await harness.execute(ctx, { title: "Test", input: "Test", agent: "worker" }));
+		assert.match(openingError, /registered, but provider auth is not configured/);
+		assert.match(openingError, /first-provider/);
+		assert.doesNotMatch(openingError, /later-provider/, "the diagnostic identifies the first unconfigured exact match");
+		assert.equal(notifications.length, 1, "the opening error does not duplicate the root warning");
+
+		authStatuses.set("first-provider", true);
+		authStatuses.set("later-provider", true);
+		assert.equal(options(prompt(harness, ctx)), '- &quot;worker&quot;', "agent becomes available when auth is configured");
+		assert.equal(notifications.length, 1, "observed recovery clears warning state without notifying");
+		authStatuses.set("first-provider", false);
+		authStatuses.set("later-provider", false);
+		harness.beforeStart(ctx, []);
+		assert.equal(notifications.length, 2, "a new unavailable period warns again");
+		harness.beforeStart(ctx, []);
+		assert.equal(notifications.length, 2, "auth warnings deduplicate while continuously unavailable");
+	} finally {
+		await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+	}
+}));
+
+test("a ready later candidate keeps the agent available without an auth warning", withSandbox(async (project, agentDir) => {
+	writeFileSync(join(agentDir, "agents", "worker.md"), "---\nname: worker\nmodel:\n  - { id: first-model, provider: first-provider, thinkingLevel: low }\n  - { id: later-model, provider: later-provider, thinkingLevel: xhigh }\n---\nWorker body");
+	const { ctx, notifications, authStatuses } = fakeContext(project, [
+		fakeModel("root-provider", "root"),
+		fakeModel("first-provider", "first-model"),
+		fakeModel("later-provider", "later-model"),
+	]);
+	authStatuses.set("first-provider", false);
+	const harness = createExtensionHarness();
+	await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+	try {
+		assert.equal(notifications.length, 0, "an unconfigured earlier candidate does not warn when a later candidate resolves");
+		assert.equal(options(prompt(harness, ctx)), '- &quot;worker&quot;');
+		assert.equal(notifications.length, 0, "live digest checks also remain warning-free");
+	} finally {
+		await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+	}
+}));
+
+test("root warns once per unresolved model period even when delegate is inactive", withSandbox(async (project, agentDir) => {
+	const filename = join(agentDir, "agents", "worker.md");
+	writeFileSync(filename, "---\nname: worker\nmodel: target-id\n---\nWorker body");
+	writeFileSync(join(agentDir, "agents", "inherited.md"), "---\nname: inherited\n---\nInherited body");
+	const rootB = fakeModel("provider-b", "root-b");
+	const rootA = fakeModel("provider-a", "root-a");
+	const targetA = fakeModel("provider-a", "target-id");
+	const { ctx, notifications } = fakeContext(project, [rootB, rootA, targetA]);
+	const harness = createExtensionHarness();
+	await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+	try {
+		assert.equal(notifications.length, 1, "startup preflight warns before any prompt");
+		assert.ok(notifications[0].message.includes(filename));
+		assert.equal(harness.beforeStart(ctx, []), undefined, "model checks run while delegate is inactive");
+		assert.equal(notifications.length, 1);
+		assert.equal(notifications[0].level, "warning");
+		assert.ok(notifications[0].message.includes(filename));
+		assert.match(notifications[0].message, /agent "worker"/);
+		assert.match(notifications[0].message, /"provider-b"\/"target-id"/);
+		assert.match(notifications[0].message, /register a matching model.*update the agent's model candidates/i);
+		harness.beforeStart(ctx, []);
+		assert.equal(notifications.length, 1, "repeat checks during the unavailable period are deduplicated");
+
+		Object.assign(ctx, { model: rootA });
+		harness.beforeStart(ctx, []);
+		assert.equal(notifications.length, 1, "observed availability clears the warning state without notifying");
+		Object.assign(ctx, { model: rootB });
+		harness.beforeStart(ctx, []);
+		assert.equal(notifications.length, 2, "a later unavailable period warns again");
+
+		const error = failure(await harness.execute(ctx, { title: "Test", input: "Test", agent: "worker" }));
+		assert.match(error, /"provider-b"\/"target-id"/);
+		assert.equal(notifications.length, 2, "manual opening retains its resolution error without warning again");
+	} finally {
+		await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+	}
+}));
+
+test("unresolved model warnings use console.warn without UI and skip inherited agents", withSandbox(async (project, agentDir) => {
+	const filename = join(agentDir, "agents", "worker.md");
+	writeFileSync(filename, "---\nname: worker\nmodel: { id: target-id, provider: explicit-provider }\n---\nWorker body");
+	writeFileSync(join(agentDir, "agents", "inherited.md"), "---\nname: inherited\n---\nInherited body");
+	const { ctx, notifications, authStatuses } = fakeContext(project, [fakeModel("root-provider", "root"), fakeModel("explicit-provider", "target-id")]);
+	authStatuses.set("explicit-provider", false);
+	Object.assign(ctx, { hasUI: false, model: undefined });
+	const harness = createExtensionHarness();
+	const warnings: string[] = [];
+	const originalWarn = console.warn;
+	console.warn = (message: unknown) => { warnings.push(String(message)); };
+	try {
+		await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+		assert.equal(warnings.length, 1, "startup preflight logs without UI");
+		harness.beforeStart(ctx, []);
+		harness.beforeStart(ctx, []);
+		assert.equal(notifications.length, 0);
+		assert.equal(warnings.length, 1, "only the explicit-model agent warns, once");
+		assert.ok(warnings[0].includes(filename));
+		assert.match(warnings[0], /agent "worker"/);
+		assert.match(warnings[0], /"explicit-provider"\/"target-id"/);
+		assert.match(warnings[0], /registered, but provider auth is not configured/);
+		assert.ok(warnings[0].includes("/login explicit-provider"));
+		assert.match(warnings[0], /pi auth check --provider explicit-provider/);
+	} finally {
+		console.warn = originalWarn;
+		await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+	}
+}));
+
 test("active delegate gets only escaped agent names and descriptions; inactive delegate gets no digest", withSandbox(async (project, agentDir) => {
 	const projectFile = join(project, CONFIG_DIR_NAME, "agents", "project-secret-path.md");
 	const userFile = join(agentDir, "agents", "user-secret-path.md");

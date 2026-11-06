@@ -104,6 +104,8 @@ export default function (pi) {
 		assert.deepEqual(lifecycle, ["start:startup", "discover:startup"]);
 		assert.deepEqual(loader.getExtensions().errors, []);
 		assert.ok(loader.getSkills().skills.some(s => s.name === "provided"));
+		assert.match(warnings.join("\n"), /old_field/);
+		assert.doesNotMatch(warnings.join("\n"), /old-missing/, "preload catalog diagnostics wait until before_agent_start");
 
 		// session_start captured agent files; no before_agent_start has run yet.
 		writeFileSync(definition, "---\nname: example\nnew_field: true\nskills: { preload: [hidden, provided, new-missing] }\n---\nnew body\n");
@@ -144,7 +146,8 @@ export default function (pi) {
 		// This is the same public AgentSession.reload() used by Pi's interactive /reload.
 		await session.reload();
 		assert.deepEqual(lifecycle, ["start:startup", "discover:startup", "shutdown:reload", "start:reload", "discover:reload"]);
-		assert.doesNotMatch(warnings.join("\n"), /new_field|new-missing/);
+		assert.match(warnings.join("\n"), /new_field/);
+		assert.doesNotMatch(warnings.join("\n"), /new-missing/, "reload preflight still defers catalog-dependent diagnostics");
 		assert.equal(loader.getSkills().skills.find(s => s.name === "visible")?.description, "New skill description");
 		assert.ok(loader.getSkills().skills.some(s => s.name === "provided"));
 		await session.prompt("/review third");

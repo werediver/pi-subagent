@@ -11,8 +11,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
-import { buildAgentSnapshot, captureAgentSources, type AgentSnapshot, type AgentSources } from "./agent-definitions.ts";
-import { formatAgentDigest, getAgentAvailability, resolveAgentModel, type ModelSettings } from "./model-resolver.ts";
+import { buildAgentSnapshot, captureAgentSources, preflightAgentSources, type AgentPreflight, type AgentSnapshot, type AgentSources } from "./agent-definitions.ts";
+import { AgentModelUnavailableError, AgentProviderAuthNotConfiguredError, formatAgentDigest, getAgentAvailability, resolveAgentModel, type ModelSettings } from "./model-resolver.ts";
 import { ContinuationQueue } from "./queue.ts";
 import { ChildRegistry, type ChildSession, disposeChild } from "./registry.ts";
 import { runChildRequest } from "./runner.ts";
@@ -37,6 +37,7 @@ type RootSharedState = {
 	context?: ExtensionContext;
 	closed: boolean;
 	sources?: AgentSources;
+	preflight?: AgentPreflight;
 	snapshot?: AgentSnapshot;
 	skills?: readonly Skill[];
 };
@@ -51,6 +52,8 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 	pi.on("turn_start", () => { activeTurnBatch = Symbol("delegate-turn"); });
 	pi.on("turn_end", () => { activeTurnBatch = undefined; });
 	const notifiedInitializationWarnings = new Set<string>();
+	const reportedDefinitionDiagnostics = new Set<string>();
+	const notifiedUnavailableModels = new Set<string>();
 	const reportInitializationError = (ctx: ExtensionContext, error: unknown) => {
 		const detail = error instanceof Error ? error.message : String(error);
 		if (notifiedInitializationWarnings.has(detail)) return;
@@ -63,11 +66,48 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 		if (!root.sources) root.sources = captureAgentSources({ cwd: ctx.cwd, agentDir: getAgentDir(), trusted: ctx.isProjectTrusted() });
 		return root.sources;
 	};
+	const reportDefinitionDiagnostics = (diagnostics: readonly { readonly filename: string; readonly reason: string }[], ctx: ExtensionContext): void => {
+		for (const diagnostic of diagnostics) {
+			const key = JSON.stringify([diagnostic.filename, diagnostic.reason]);
+			if (reportedDefinitionDiagnostics.has(key)) continue;
+			reportedDefinitionDiagnostics.add(key);
+			const message = `Agent definition ${diagnostic.filename}: ${diagnostic.reason}`;
+			if (ctx.hasUI) ctx.ui.notify(message, "warning");
+			else console.warn(message);
+		}
+	};
+	const checkUnavailableModels = (ctx: ExtensionContext, definitions: readonly AgentSnapshot["definitions"][number][]): void => {
+		const rootModel = ctx.model ? { model: ctx.model, thinkingLevel: ctx.thinkingLevel } : undefined;
+		for (const definition of definitions) {
+			if (definition.model === undefined) continue;
+			const warningKey = JSON.stringify([definition.filename, definition.name]);
+			try {
+				resolveAgentModel(definition, ctx, rootModel, ctx.modelRegistry);
+				notifiedUnavailableModels.delete(warningKey);
+			} catch (error) {
+				if (!(error instanceof AgentModelUnavailableError) || notifiedUnavailableModels.has(warningKey)) continue;
+				notifiedUnavailableModels.add(warningKey);
+				const fix = error instanceof AgentProviderAuthNotConfiguredError
+					? ""
+					: " Fix: register a matching model in the root registry or update the agent's model candidates.";
+				const message = `Agent definition ${definition.filename} for agent ${JSON.stringify(definition.name)}: ${error.message}${fix}`;
+				if (ctx.hasUI) ctx.ui.notify(message, "warning");
+				else console.warn(message);
+			}
+		}
+	};
+	const preflightRootSources = (ctx: ExtensionContext): void => {
+		if (root.preflight) return;
+		try { root.preflight = preflightAgentSources(captureRootSources(ctx)); }
+		catch (error) { reportInitializationError(ctx, error); return; }
+		reportDefinitionDiagnostics(root.preflight.diagnostics, ctx);
+		checkUnavailableModels(ctx, root.preflight.modelDefinitions);
+	};
 	if (subordinationLevel === 0) {
 		const updateRootContext = (_event: unknown, ctx: ExtensionContext) => { if (!root.closed) root.context = ctx; };
 		pi.on("session_start", (event, ctx) => {
 			updateRootContext(event, ctx);
-			if (!root.closed) try { captureRootSources(ctx); } catch (error) { reportInitializationError(ctx, error); }
+			if (!root.closed) preflightRootSources(ctx);
 		});
 		pi.on("model_select", updateRootContext);
 		pi.on("thinking_level_select", updateRootContext);
@@ -84,19 +124,17 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 	pi.on("before_agent_start", (event, ctx) => {
 		if (subordinationLevel === 0 && !root.closed) {
 			root.context = ctx;
+			preflightRootSources(ctx);
 			if (!root.snapshot) {
 				try {
 					// The full loaded skill list is exposed only after resource discovery.
 					const skills = event.systemPromptOptions.skills ?? [];
 					root.snapshot = buildAgentSnapshot(captureRootSources(ctx), skills.map((skill) => skill.name));
 					root.skills = [...skills];
-					for (const diagnostic of root.snapshot.diagnostics) {
-						const message = `Agent definition ${diagnostic.filename}: ${diagnostic.reason}`;
-						if (ctx.hasUI) ctx.ui.notify(message, "warning");
-						else console.warn(message);
-					}
+					reportDefinitionDiagnostics(root.snapshot.diagnostics, ctx);
 				} catch (error) { reportInitializationError(ctx, error); }
 			}
+			if (root.snapshot && root.context && !root.closed) checkUnavailableModels(root.context, root.snapshot.definitions);
 		}
 		if (!event.systemPromptOptions.selectedTools?.includes("delegate") || !root.snapshot || !root.context || root.closed) return;
 		const rootContext = root.context;

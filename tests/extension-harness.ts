@@ -13,13 +13,17 @@ export function fakeModel(provider = "test-provider", id = "test-model"): Model<
 /** Minimal, mutable context: intentionally throws if code tries to use an unstubbed API. */
 export function fakeContext(cwd: string, models = [fakeModel()]) {
 	const notifications: { message: string; level: string | undefined }[] = [];
+	const authStatuses = new Map<string, boolean>();
 	const ctx = {
 		cwd, isProjectTrusted: () => true, hasUI: true,
 		model: models[0], thinkingLevel: "low",
-		modelRegistry: { getAll: () => models },
+		modelRegistry: {
+			getAll: () => models,
+			getProviderAuthStatus: (provider: string) => ({ configured: authStatuses.get(provider) ?? true }),
+		},
 		ui: { notify: (message: string, level?: string) => notifications.push({ message, level }), theme: {} },
 	} as unknown as ExtensionContext;
-	return { ctx, notifications };
+	return { ctx, notifications, authStatuses };
 }
 
 /** Captures registered callbacks and the tool without needing a live Pi session or provider. */

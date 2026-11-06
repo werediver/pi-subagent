@@ -7,6 +7,7 @@ type DeepReadonly<T> = T extends (...args: never[]) => unknown ? T : T extends o
 export type AgentModelCandidate = { readonly id: string; readonly provider?: string; readonly thinkingLevel?: ModelThinkingLevel };
 
 export type AgentDefinition = {
+	readonly filename: string;
 	readonly name: string;
 	readonly description?: string;
 	readonly prompt: string;
@@ -17,6 +18,10 @@ export type AgentDefinition = {
 export type AgentDiagnostic = { readonly filename: string; readonly reason: string };
 export type AgentSnapshot = {
 	readonly definitions: readonly AgentDefinition[];
+	readonly diagnostics: readonly AgentDiagnostic[];
+};
+export type AgentPreflight = {
+	readonly modelDefinitions: readonly AgentDefinition[];
 	readonly diagnostics: readonly AgentDiagnostic[];
 };
 
@@ -68,7 +73,7 @@ function parseModel(value: unknown): readonly AgentModelCandidate[] {
 	return [parseModelCandidate(value, "model")];
 }
 
-function parseDefinition(content: string, skillNames: ReadonlySet<string>, report: (reason: string) => void): AgentDefinition {
+function parseDefinition(filename: string, content: string, skillNames: ReadonlySet<string> | undefined, report: (reason: string) => void): AgentDefinition {
 	const normalized = content.replace(/\r\n?/g, "\n");
 	if (!normalized.startsWith("---\n")) throw new Error("expected an opening --- frontmatter delimiter on its own line");
 	// Pi treats a missing delimiter as ordinary body text, so validate it first.
@@ -107,10 +112,10 @@ function parseDefinition(content: string, skillNames: ReadonlySet<string>, repor
 		if (Object.hasOwn(skills, "preload")) {
 			if (!Array.isArray(skills.preload)) throw new Error("skills.preload must be an array of skill names");
 			preload = skills.preload.map((value) => requiredString(value, "skills.preload name"));
-			for (const skill of preload) if (!skillNames.has(skill)) throw new Error(`unknown preloaded skill ${JSON.stringify(skill)}`);
+			if (skillNames) for (const skill of preload) if (!skillNames.has(skill)) throw new Error(`unknown preloaded skill ${JSON.stringify(skill)}`);
 		}
 	}
-	return { name, ...(description === undefined ? {} : { description }), prompt: body, tools: rules, ...(model === undefined ? {} : { model }), skills: { allowDiscovery, preload } };
+	return { filename, name, ...(description === undefined ? {} : { description }), prompt: body, tools: rules, ...(model === undefined ? {} : { model }), skills: { allowDiscovery, preload } };
 }
 
 export function captureAgentSources(options: { cwd: string; agentDir: string; trusted: boolean }): AgentSources {
@@ -132,6 +137,58 @@ export function captureAgentSources(options: { cwd: string; agentDir: string; tr
 	return immutableCopy({ sources });
 }
 
+export function preflightAgentSources(capture: AgentSources): AgentPreflight {
+	type Entry = { readonly filename: string; readonly definition?: AgentDefinition; readonly catalogDependent: boolean; readonly diagnostics: AgentDiagnostic[] };
+	const entries: Entry[] = [];
+	for (const source of capture.sources) {
+		if (!("content" in source)) {
+			entries.push({ filename: source.filename, catalogDependent: false, diagnostics: [source] });
+			continue;
+		}
+		const diagnostics: AgentDiagnostic[] = [];
+		try {
+			const definition = parseDefinition(source.filename, source.content, undefined, (reason) => diagnostics.push({ filename: source.filename, reason }));
+			entries.push({ filename: source.filename, definition, catalogDependent: definition.skills.preload.length > 0, diagnostics });
+		} catch (error) {
+			diagnostics.push({ filename: source.filename, reason: error instanceof Error ? error.message : String(error) });
+			entries.push({ filename: source.filename, catalogDependent: false, diagnostics });
+		}
+	}
+
+	const byName = new Map<string, Entry[]>();
+	for (const entry of entries) {
+		if (!entry.definition) continue;
+		const group = byName.get(entry.definition.name) ?? [];
+		group.push(entry);
+		byName.set(entry.definition.name, group);
+	}
+	const modelDefinitions: AgentDefinition[] = [];
+	for (const [name, group] of byName) {
+		if (group.length === 1) {
+			modelDefinitions.push(group[0].definition!);
+			continue;
+		}
+		let uncertainWinner = false;
+		let guaranteedWinner = false;
+		for (const entry of group) {
+			if (entry.catalogDependent) {
+				if (!guaranteedWinner) uncertainWinner = true;
+				continue;
+			}
+			if (guaranteedWinner) {
+				entry.diagnostics.push({ filename: entry.filename, reason: `duplicate agent name ${JSON.stringify(name)} (ignored)` });
+			} else if (uncertainWinner) {
+				// This entry is either the winner or a duplicate depending on earlier skill validation.
+				guaranteedWinner = true;
+			} else {
+				guaranteedWinner = true;
+				modelDefinitions.push(entry.definition!);
+			}
+		}
+	}
+	return immutableCopy({ modelDefinitions, diagnostics: entries.flatMap((entry) => entry.diagnostics) });
+}
+
 export function buildAgentSnapshot(capture: AgentSources, skillNames: readonly string[]): AgentSnapshot {
 	const skills = new Set(skillNames);
 	const definitions: AgentDefinition[] = [];
@@ -141,7 +198,7 @@ export function buildAgentSnapshot(capture: AgentSources, skillNames: readonly s
 		if (!("content" in source)) { diagnostics.push(source); continue; }
 		const { filename, content } = source;
 		try {
-			const definition = parseDefinition(content, skills, (reason) => diagnostics.push({ filename, reason }));
+			const definition = parseDefinition(filename, content, skills, (reason) => diagnostics.push({ filename, reason }));
 			if (names.has(definition.name)) { diagnostics.push({ filename, reason: `duplicate agent name ${JSON.stringify(definition.name)} (ignored)` }); continue; }
 			names.add(definition.name);
 			definitions.push(definition);

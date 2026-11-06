@@ -7,11 +7,25 @@ export type ModelSettings = { model: Model<any>; thinkingLevel?: ModelThinkingLe
 
 type ModelContext = Pick<ExtensionContext, "model" | "thinkingLevel" | "modelRegistry">;
 
-export class AgentModelNotFoundError extends Error {
+export class AgentModelUnavailableError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "AgentModelUnavailableError";
+	}
+}
+
+export class AgentModelNotFoundError extends AgentModelUnavailableError {
 	constructor(attempted: readonly { readonly provider?: string; readonly id: string }[], agent: string) {
 		const pairs = attempted.map(({ provider, id }) => `${JSON.stringify(provider ?? "<no root provider>")}/${JSON.stringify(id)}`).join(", ");
 		super(`None of the model candidates for agent ${JSON.stringify(agent)} were found in the live model registry. Attempted: ${pairs}. Register the models or update the agent's model candidates.`);
 		this.name = "AgentModelNotFoundError";
+	}
+}
+
+export class AgentProviderAuthNotConfiguredError extends AgentModelUnavailableError {
+	constructor(provider: string, id: string, agent: string) {
+		super(`Model candidate ${JSON.stringify(provider)}/${JSON.stringify(id)} for agent ${JSON.stringify(agent)} is registered, but provider auth is not configured for ${JSON.stringify(provider)}. Configure auth with \`/login ${provider}\` or \`pi auth check --provider ${provider}\`.`);
+		this.name = "AgentProviderAuthNotConfiguredError";
 	}
 }
 
@@ -43,12 +57,21 @@ function resolveConcreteAgentModel(
 	if (!candidates?.length) throw new Error(`Agent ${JSON.stringify(definition.name)} does not reference a concrete model candidate.`);
 	const models = rootRegistry.getAll();
 	const attempted: { provider?: string; id: string }[] = [];
+	let firstUnconfiguredMatch: { provider: string; id: string } | undefined;
 	for (const candidate of candidates) {
 		const provider = candidate.provider ?? rootModel?.model.provider;
 		attempted.push({ ...(provider === undefined ? {} : { provider }), id: candidate.id });
 		if (provider === undefined) continue;
 		const found = models.find((model) => model.id === candidate.id && model.provider === provider);
-		if (found) return { model: found, ...(candidate.thinkingLevel === undefined ? {} : { thinkingLevel: candidate.thinkingLevel }) };
+		if (!found) continue;
+		if (!rootRegistry.getProviderAuthStatus(provider).configured) {
+			firstUnconfiguredMatch ??= { provider, id: candidate.id };
+			continue;
+		}
+		return { model: found, ...(candidate.thinkingLevel === undefined ? {} : { thinkingLevel: candidate.thinkingLevel }) };
+	}
+	if (firstUnconfiguredMatch) {
+		throw new AgentProviderAuthNotConfiguredError(firstUnconfiguredMatch.provider, firstUnconfiguredMatch.id, definition.name);
 	}
 	throw new AgentModelNotFoundError(attempted, definition.name);
 }
