@@ -118,10 +118,10 @@ test("nested sessions share the agent snapshot while root models remain live, un
 	const leafRules = "tools:\n  '*': false\n  read: true\n  bash: false\n";
 	putAgent("child", nestedRules.replace("preload: [nested-check]", "preload: [nested-check, root-only]"), "AGENT-BODY-CHILD");
 	putAgent("grandchild", nestedRules, "AGENT-BODY-GRANDCHILD");
-	putAgent("main", `model: main\nthinkingLevel: high\n${leafRules}`, "MAIN-AGENT-BODY");
-	putAgent("dynamic", `model: switch-target\nthinkingLevel: medium\n${leafRules}`, "DYNAMIC-AGENT-BODY");
-	putAgent("fallback", `model:\n  - id: main\n  - id: alternate-model\n    provider: alternate-test\n${leafRules}`, "FALLBACK-AGENT-BODY");
-	putAgent("parent", `model: parent\nthinkingLevel: low\n${leafRules}`, "PARENT-AGENT-BODY");
+	putAgent("main", `model: { id: main, thinkingLevel: high }\n${leafRules}`, "MAIN-AGENT-BODY");
+	putAgent("dynamic", `model: { id: switch-target, thinkingLevel: medium }\n${leafRules}`, "DYNAMIC-AGENT-BODY");
+	putAgent("fallback", `model:\n  - { id: main, thinkingLevel: high }\n  - { id: alternate-model, provider: alternate-test, thinkingLevel: low }\n${leafRules}`, "FALLBACK-AGENT-BODY");
+	putAgent("parent", `model: { id: parent, thinkingLevel: low }\n${leafRules}`, "PARENT-AGENT-BODY");
 	putAgent("inherit", leafRules, "INHERIT-AGENT-BODY");
 	writeFakeProvider(agentDir, logPath);
 	process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -196,7 +196,7 @@ test("nested sessions share the agent snapshot while root models remain live, un
 		// Change agent definitions after snapshot creation. The replacement child
 		// disables delegate, making continuation reuse observable.
 		putAgent("child", leafRules, "RELOADED-CHILD-BODY");
-		putAgent("dynamic", `model: alternate-model\nthinkingLevel: low\n${leafRules}`, "RELOADED-DYNAMIC-BODY");
+		putAgent("dynamic", `model: { id: alternate-model, thinkingLevel: low }\n${leafRules}`, "RELOADED-DYNAMIC-BODY");
 		const afterEdit = (await harness.execute(ctx, { title: "New after edit", input: "new after edit", agent: "child" })).details as DelegateCmdResult;
 		assert.equal(afterEdit.status, "completed", JSON.stringify(afterEdit));
 		assert.ok(afterEdit.sessionId);
@@ -297,6 +297,7 @@ test("nested sessions share the agent snapshot while root models remain live, un
 		assert.equal(byPrompt("no root inherited leaf")[0].provider, "nested-test");
 		assert.equal(byPrompt("no root fallback leaf")[0].provider, "alternate-test");
 		assert.equal(byPrompt("no root fallback leaf")[0].model, "alternate-model");
+		assert.equal(byPrompt("no root fallback leaf")[0].reasoning, "low");
 
 		// Shutdown invalidates the old tree; a fresh factory acts as reload and
 		// snapshots the replacement agent definitions rather than inheriting the old tree.

@@ -42,7 +42,7 @@ const resolve = (definition: AgentDefinition, ctx: ModelContext, root: ModelSett
 test("omitted model inherits the immediate caller model and thinking level", () => {
 	const ctx = context(callerModel, allModels);
 	assert.deepEqual(resolve(agentDefinition(), ctx), { model: callerModel, thinkingLevel: "low" });
-	assert.deepEqual(resolve(agentDefinition({ thinkingLevel: "high" }), ctx), { model: callerModel, thinkingLevel: "high" });
+	assert.deepEqual(resolve(agentDefinition(), { ...ctx, thinkingLevel: "high" }), { model: callerModel, thinkingLevel: "high" });
 	assert.throws(() => resolve(agentDefinition(), context(undefined), undefined), { message: "The parent session has no active model." });
 });
 
@@ -51,6 +51,7 @@ test("model candidates resolve in order with exact opaque provider and ID matchi
 	assert.deepEqual(resolve(agentDefinition({ model: [{ id: "shared" }] }), ctx), { model: rootShared });
 	assert.deepEqual(resolve(agentDefinition({ model: [{ id: "shared", provider: "explicit-provider" }, { id: "shared" }] }), ctx), { model: explicitShared });
 	assert.deepEqual(resolve(agentDefinition({ model: [{ id: "shared", provider: "explicit-provider" }] }), ctx), { model: explicitShared });
+	assert.deepEqual(resolve(agentDefinition({ model: [{ id: "shared", provider: "explicit-provider", thinkingLevel: "xhigh" }] }), ctx), { model: explicitShared, thinkingLevel: "xhigh" });
 	assert.deepEqual(resolve(agentDefinition({ model: [{ id: "parent" }] }), ctx), { model: rootParentNamed });
 	assert.deepEqual(resolve(agentDefinition({ model: [{ id: "main" }] }), ctx), { model: rootMainNamed });
 	assert.deepEqual(resolve(agentDefinition({ model: [{ id: "absent" }, { id: "shared", provider: "explicit-provider" }] }), ctx), { model: explicitShared });
@@ -61,17 +62,17 @@ test("model candidates resolve in order with exact opaque provider and ID matchi
 
 test("mixed string and mapping entries resolve in their declared order", () => {
 	const snapshot = buildAgentSnapshot({ sources: [
-		{ filename: "string-first.md", content: "---\nname: string-first\nmodel:\n  - shared\n  - { id: shared, provider: explicit-provider }\n---\n" },
-		{ filename: "mapping-first.md", content: "---\nname: mapping-first\nmodel:\n  - { id: shared, provider: explicit-provider }\n  - shared\n---\n" },
+		{ filename: "string-first.md", content: "---\nname: string-first\nmodel:\n  - shared\n  - { id: shared, provider: explicit-provider, thinkingLevel: high }\n---\n" },
+		{ filename: "mapping-first.md", content: "---\nname: mapping-first\nmodel:\n  - { id: shared, provider: explicit-provider, thinkingLevel: high }\n  - shared\n---\n" },
 	] }, []);
 	assert.deepEqual(snapshot.diagnostics, []);
 	assert.deepEqual(snapshot.definitions.map(({ model: candidates }) => candidates), [
-		[{ id: "shared" }, { id: "shared", provider: "explicit-provider" }],
-		[{ id: "shared", provider: "explicit-provider" }, { id: "shared" }],
+		[{ id: "shared" }, { id: "shared", provider: "explicit-provider", thinkingLevel: "high" }],
+		[{ id: "shared", provider: "explicit-provider", thinkingLevel: "high" }, { id: "shared" }],
 	]);
 	const ctx = context(callerModel, allModels);
-	assert.deepEqual(resolve(snapshot.definitions[0], ctx), { model: rootShared });
-	assert.deepEqual(resolve(snapshot.definitions[1], ctx), { model: explicitShared });
+	assert.deepEqual(resolve(snapshot.definitions[0], ctx), { model: rootShared }, "a later candidate's thinking level does not apply when the earlier string matches");
+	assert.deepEqual(resolve(snapshot.definitions[1], ctx), { model: explicitShared, thinkingLevel: "high" });
 });
 
 test("concrete model lookup uses the live root provider and root registry", () => {

@@ -35,23 +35,30 @@ test("trust, lexical order, duplicates, invalid project fallback and no ancestor
 	assert.deepEqual(discover(false).diagnostics, []);
 }));
 
-test("model strings, mappings, all-string lists and mixed lists normalize to candidates", () => fixture(({ put, discover }) => {
+test("model candidates normalize and candidate thinking levels are validated", () => fixture(({ put, discover }) => {
 	put("user", "a.md", agent("a", "model: ' review '\n"));
-	put("user", "b.md", agent("b", "model: { id: unavailable-id, provider: missing-provider }\n"));
-	put("user", "c.md", agent("c", "model:\n  - ' parent '\n  - id: 'Models/Main'\n    provider: ' Provider/Name '\n"));
+	put("user", "b.md", agent("b", "model: { id: unavailable-id, provider: missing-provider, thinkingLevel: high }\n"));
+	put("user", "c.md", agent("c", "model:\n  - ' parent '\n  - id: 'Models/Main'\n    provider: ' Provider/Name '\n    thinkingLevel: xhigh\n"));
 	put("user", "d.md", agent("d", "model: [first, ' second ']\n"));
-	put("user", "e.md", agent("e", "model: x\nprovider: p\n"));
-	put("user", "f.md", agent("f", "provider: p\n"));
+	put("user", "e.md", agent("e", "model:\n  - { id: off, thinkingLevel: off }\n  - { id: minimal, thinkingLevel: minimal }\n  - { id: low, thinkingLevel: low }\n  - { id: medium, thinkingLevel: medium }\n  - { id: high, thinkingLevel: high }\n  - { id: xhigh, thinkingLevel: xhigh }\n  - { id: max, thinkingLevel: max }\n"));
+	put("user", "f.md", agent("f", "model: x\nprovider: p\n"));
+	put("user", "g.md", agent("g", "provider: p\n"));
+	put("user", "h.md", agent("h", "thinkingLevel: high\n"));
+	put("user", "i.md", agent("i", "model: review\nthinkingLevel: high\n"));
 	const snapshot = discover();
 	assert.deepEqual(snapshot.definitions.map((d) => d.model), [
 		[{ id: "review" }],
-		[{ id: "unavailable-id", provider: "missing-provider" }],
-		[{ id: "parent" }, { id: "Models/Main", provider: "Provider/Name" }],
+		[{ id: "unavailable-id", provider: "missing-provider", thinkingLevel: "high" }],
+		[{ id: "parent" }, { id: "Models/Main", provider: "Provider/Name", thinkingLevel: "xhigh" }],
 		[{ id: "first" }, { id: "second" }],
+		["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((id) => ({ id, thinkingLevel: id })),
 	]);
-	assert.equal(snapshot.diagnostics.length, 2);
-	assert.ok(snapshot.diagnostics.every(({ reason }) => /top-level provider is no longer supported/.test(reason)));
-	assert.ok(snapshot.diagnostics.every(({ reason }) => /migrate model: x \+ provider: p to model: \{ id: x, provider: p \}/.test(reason)));
+	assert.equal(snapshot.diagnostics.length, 4);
+	assert.equal(snapshot.diagnostics.filter(({ reason }) => /top-level provider is no longer supported/.test(reason)).length, 2);
+	const thinkingDiagnostics = snapshot.diagnostics.filter(({ reason }) => /top-level thinkingLevel/.test(reason));
+	assert.equal(thinkingDiagnostics.length, 2);
+	assert.ok(thinkingDiagnostics.every(({ reason }) => /migrate model: x \+ thinkingLevel: high to model: \{ id: x, thinkingLevel: high \}/.test(reason)));
+	assert.ok(thinkingDiagnostics.every(({ reason }) => /model is omitted.*inherited unchanged/.test(reason)));
 }));
 
 test("unknown fields reported and ignored, nested skills and preload validated against full catalog", () => fixture(({ put, discover }) => {
@@ -68,7 +75,7 @@ test("unknown fields reported and ignored, nested skills and preload validated a
 
 test("invalid known fields and malformed YAML or delimiters are rejected", () => fixture(({ put, discover }) => {
 	const invalid = [
-		"name: ''", "name: [foo]", "name: ok\ndescription: [x]", "name: ok\ndescription: |\n  line\n  line", "name: ok\nmodel: null", "name: ok\nmodel: []", "name: ok\nmodel: [42]", "name: ok\nmodel: [null]", "name: ok\nmodel: [' ']", "name: ok\nmodel:\n  - { id: valid }\n  - { provider: p }", "name: ok\nmodel:\n  - { id: valid }\n  - false", "name: ok\nmodel: { provider: p }", "name: ok\nmodel: { id: x, alias: y }", "name: ok\nprovider: 3", "name: ok\nthinkingLevel: extreme", "name: ok\ntools: { a: yes }", "name: ok\ntools: { '': true }", "name: ok\nskills: []", "name: ok\nskills: { allowDiscovery: null }", "name: ok\nskills: { preload: name }", "name: ok\nskills: { preload: [42] }", "name: ok\nname: duplicate", "name: [unterminated", "[a, b]",
+		"name: ''", "name: [foo]", "name: ok\ndescription: [x]", "name: ok\ndescription: |\n  line\n  line", "name: ok\nmodel: null", "name: ok\nmodel: []", "name: ok\nmodel: [42]", "name: ok\nmodel: [null]", "name: ok\nmodel: [' ']", "name: ok\nmodel:\n  - { id: valid }\n  - { provider: p }", "name: ok\nmodel:\n  - { id: valid }\n  - false", "name: ok\nmodel: { provider: p }", "name: ok\nmodel: { id: x, alias: y }", "name: ok\nmodel: { id: x, thinkingLevel: extreme }", "name: ok\nmodel:\n  - { id: valid }\n  - { id: later, thinkingLevel: extreme }", "name: ok\nprovider: 3", "name: ok\ntools: { a: yes }", "name: ok\ntools: { '': true }", "name: ok\nskills: []", "name: ok\nskills: { allowDiscovery: null }", "name: ok\nskills: { preload: name }", "name: ok\nskills: { preload: [42] }", "name: ok\nname: duplicate", "name: [unterminated", "[a, b]",
 	];
 	invalid.forEach((yaml, i) => put("user", `${String(i).padStart(2, "0")}.md`, `---\n${yaml}\n---\n`));
 	for (const [i, text] of ["name: no frontmatter", "---oops\nname: x\n---", "---\nname: x", "---\nname: x\n---oops\n", "--- \nname: x\n---"].entries()) put("user", `x${i}.md`, text);
@@ -80,10 +87,11 @@ test("invalid known fields and malformed YAML or delimiters are rejected", () =>
 }));
 
 test("YAML quoting, flow and aliases, ordered tool patterns including __proto__, body and CRLF", () => fixture(({ put, discover }) => {
-	put("user", "a.md", "---\r\nname: ' yaml '\r\ndescription: \"A: purpose\"\r\ntools: { read: false, '*': true, __proto__: false, bash: false }\r\nskills: { preload: &names [one], allowDiscovery: false, other: *names }\r\nthinkingLevel: xhigh\r\n---\r\n\r\nBody\r\nline\r\n");
+	put("user", "a.md", "---\r\nname: ' yaml '\r\ndescription: \"A: purpose\"\r\ntools: { read: false, '*': true, __proto__: false, bash: false }\r\nskills: { preload: &names [one], allowDiscovery: false, other: *names }\r\nmodel: { id: ' Models/Review ', thinkingLevel: xhigh }\r\n---\r\n\r\nBody\r\nline\r\n");
 	const snapshot = discover(true, ["one"]);
 	assert.equal(snapshot.definitions[0].name, "yaml");
 	assert.equal(snapshot.definitions[0].prompt, "Body\nline");
+	assert.deepEqual(snapshot.definitions[0].model, [{ id: "Models/Review", thinkingLevel: "xhigh" }]);
 	assert.deepEqual(snapshot.definitions[0].tools, [{ pattern: "read", enabled: false }, { pattern: "*", enabled: true }, { pattern: "__proto__", enabled: false }, { pattern: "bash", enabled: false }]);
 	assert.deepEqual(evaluateToolAccess(snapshot.definitions[0].tools, ["read", "bash", "__proto__"]), ["read"]);
 	assert.match(snapshot.diagnostics[0].reason, /other/);

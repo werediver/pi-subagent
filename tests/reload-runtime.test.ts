@@ -64,7 +64,7 @@ export default function (pi) {
 	const definition = join(agents, "example.md");
 	const childDefinition = join(agents, "child.md");
 	writeFileSync(definition, "---\nname: example\nold_field: true\nskills: { preload: [hidden, provided, old-missing] }\n---\nold body\n");
-	writeFileSync(childDefinition, "---\nname: child\nmodel: fake-model\nthinkingLevel: low\n---\nOLD-CHILD-BODY\n");
+	writeFileSync(childDefinition, "---\nname: child\nmodel: { id: fake-model, thinkingLevel: low }\n---\nOLD-CHILD-BODY\n");
 	writeFileSync(join(prompts, "review.md"), "Old template $1\n");
 	writeFileSync(join(agentDir, "subagent.json"), "not valid JSON; ignored by the extension");
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -107,7 +107,7 @@ export default function (pi) {
 
 		// session_start captured agent files; no before_agent_start has run yet.
 		writeFileSync(definition, "---\nname: example\nnew_field: true\nskills: { preload: [hidden, provided, new-missing] }\n---\nnew body\n");
-		writeFileSync(childDefinition, "---\nname: child\nmodel: fake-model\nthinkingLevel: high\n---\nNEW-CHILD-BODY\n");
+		writeFileSync(childDefinition, "---\nname: child\nmodel: { id: fake-model, thinkingLevel: high }\n---\nNEW-CHILD-BODY\n");
 		writeFileSync(join(agentDir, "subagent.json"), "still ignored after reload");
 		writeSkill(join(skills, "visible"), "visible", "New skill description");
 		writeFileSync(join(prompts, "review.md"), "New template $1\n");

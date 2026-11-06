@@ -27,14 +27,11 @@ export function resolveAgentModel(
 	rootModel: ModelSettings | undefined,
 	rootRegistry: ModelContext["modelRegistry"] = ctx.modelRegistry,
 ): ModelSettings {
-	let resolved: ModelSettings;
 	if (definition.model === undefined) {
 		if (!ctx.model) throw new Error("The parent session has no active model.");
-		resolved = { model: ctx.model, thinkingLevel: ctx.thinkingLevel };
-	} else {
-		resolved = resolveConcreteAgentModel(definition, rootModel, rootRegistry);
+		return { model: ctx.model, thinkingLevel: ctx.thinkingLevel };
 	}
-	return definition.thinkingLevel === undefined ? resolved : { model: resolved.model, thinkingLevel: definition.thinkingLevel };
+	return resolveConcreteAgentModel(definition, rootModel, rootRegistry);
 }
 
 function resolveConcreteAgentModel(
@@ -51,7 +48,7 @@ function resolveConcreteAgentModel(
 		attempted.push({ ...(provider === undefined ? {} : { provider }), id: candidate.id });
 		if (provider === undefined) continue;
 		const found = models.find((model) => model.id === candidate.id && model.provider === provider);
-		if (found) return { model: found };
+		if (found) return { model: found, ...(candidate.thinkingLevel === undefined ? {} : { thinkingLevel: candidate.thinkingLevel }) };
 	}
 	throw new AgentModelNotFoundError(attempted, definition.name);
 }
