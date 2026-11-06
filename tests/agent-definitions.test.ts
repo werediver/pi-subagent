@@ -35,21 +35,23 @@ test("trust, lexical order, duplicates, invalid project fallback and no ancestor
 	assert.deepEqual(discover(false).diagnostics, []);
 }));
 
-test("model is always a concrete ID and provider requires a model", () => fixture(({ put, discover }) => {
-	put("user", "a.md", agent("a", "model: review\n"));
-	put("user", "b.md", agent("b", "model: unavailable-id\nprovider: missing-provider\n"));
-	put("user", "c.md", agent("c", "model: parent\nprovider: p\n"));
-	put("user", "d.md", agent("d", "provider: p\n"));
-	put("user", "e.md", agent("e", "model: main\n"));
+test("model strings, mappings, all-string lists and mixed lists normalize to candidates", () => fixture(({ put, discover }) => {
+	put("user", "a.md", agent("a", "model: ' review '\n"));
+	put("user", "b.md", agent("b", "model: { id: unavailable-id, provider: missing-provider }\n"));
+	put("user", "c.md", agent("c", "model:\n  - ' parent '\n  - id: 'Models/Main'\n    provider: ' Provider/Name '\n"));
+	put("user", "d.md", agent("d", "model: [first, ' second ']\n"));
+	put("user", "e.md", agent("e", "model: x\nprovider: p\n"));
+	put("user", "f.md", agent("f", "provider: p\n"));
 	const snapshot = discover();
 	assert.deepEqual(snapshot.definitions.map((d) => d.model), [
-		{ name: "review" },
-		{ name: "unavailable-id", provider: "missing-provider" },
-		{ name: "parent", provider: "p" },
-		{ name: "main" },
+		[{ id: "review" }],
+		[{ id: "unavailable-id", provider: "missing-provider" }],
+		[{ id: "parent" }, { id: "Models/Main", provider: "Provider/Name" }],
+		[{ id: "first" }, { id: "second" }],
 	]);
-	assert.equal(snapshot.diagnostics.length, 1);
-	assert.match(snapshot.diagnostics[0].reason, /provider.*alongside.*model/i);
+	assert.equal(snapshot.diagnostics.length, 2);
+	assert.ok(snapshot.diagnostics.every(({ reason }) => /top-level provider is no longer supported/.test(reason)));
+	assert.ok(snapshot.diagnostics.every(({ reason }) => /migrate model: x \+ provider: p to model: \{ id: x, provider: p \}/.test(reason)));
 }));
 
 test("unknown fields reported and ignored, nested skills and preload validated against full catalog", () => fixture(({ put, discover }) => {
@@ -66,7 +68,7 @@ test("unknown fields reported and ignored, nested skills and preload validated a
 
 test("invalid known fields and malformed YAML or delimiters are rejected", () => fixture(({ put, discover }) => {
 	const invalid = [
-		"name: ''", "name: [foo]", "name: ok\ndescription: [x]", "name: ok\ndescription: |\n  line\n  line", "name: ok\nmodel: null", "name: ok\nprovider: 3", "name: ok\nthinkingLevel: extreme", "name: ok\ntools: { a: yes }", "name: ok\ntools: { '': true }", "name: ok\nskills: []", "name: ok\nskills: { allowDiscovery: null }", "name: ok\nskills: { preload: name }", "name: ok\nskills: { preload: [42] }", "name: ok\nname: duplicate", "name: [unterminated", "[a, b]",
+		"name: ''", "name: [foo]", "name: ok\ndescription: [x]", "name: ok\ndescription: |\n  line\n  line", "name: ok\nmodel: null", "name: ok\nmodel: []", "name: ok\nmodel: [42]", "name: ok\nmodel: [null]", "name: ok\nmodel: [' ']", "name: ok\nmodel:\n  - { id: valid }\n  - { provider: p }", "name: ok\nmodel:\n  - { id: valid }\n  - false", "name: ok\nmodel: { provider: p }", "name: ok\nmodel: { id: x, alias: y }", "name: ok\nprovider: 3", "name: ok\nthinkingLevel: extreme", "name: ok\ntools: { a: yes }", "name: ok\ntools: { '': true }", "name: ok\nskills: []", "name: ok\nskills: { allowDiscovery: null }", "name: ok\nskills: { preload: name }", "name: ok\nskills: { preload: [42] }", "name: ok\nname: duplicate", "name: [unterminated", "[a, b]",
 	];
 	invalid.forEach((yaml, i) => put("user", `${String(i).padStart(2, "0")}.md`, `---\n${yaml}\n---\n`));
 	for (const [i, text] of ["name: no frontmatter", "---oops\nname: x\n---", "---\nname: x", "---\nname: x\n---oops\n", "--- \nname: x\n---"].entries()) put("user", `x${i}.md`, text);
@@ -74,6 +76,7 @@ test("invalid known fields and malformed YAML or delimiters are rejected", () =>
 	assert.equal(snapshot.definitions.length, 0);
 	assert.equal(snapshot.diagnostics.length, invalid.length + 5);
 	assert.ok(snapshot.diagnostics.every((d) => d.filename.endsWith(".md") && d.reason.length > 0));
+	assert.match(snapshot.diagnostics.find((d) => d.reason.includes("top-level provider"))?.reason ?? "", /migrate model: x \+ provider: p to model: \{ id: x, provider: p \}/);
 }));
 
 test("YAML quoting, flow and aliases, ordered tool patterns including __proto__, body and CRLF", () => fixture(({ put, discover }) => {
@@ -121,7 +124,7 @@ test("capture freezes agent files; build applies skill names without rescanning"
 	put("project", "new.md", agent("new"));
 	const withSkill = buildAgentSnapshot(captured, ["late"]);
 	assert.deepEqual(withSkill.definitions.map((definition) => [definition.name, definition.prompt]), [["shared", "project original"], ["deleted", "still captured"]]);
-	assert.deepEqual(withSkill.definitions[0].model, { name: "review" });
+	assert.deepEqual(withSkill.definitions[0].model, [{ id: "review" }]);
 	assert.match(withSkill.diagnostics[0].reason, /duplicate/);
 	assert.equal(withSkill.diagnostics[0].filename, user);
 	const withoutSkill = buildAgentSnapshot(captured, []);
@@ -177,6 +180,6 @@ test("untrusted capture excludes project files even if later built after changes
 test("snapshot is an immutable deep copy", () => fixture(({ put, discover }) => {
 	put("user", "a.md", agent("a", "tools: { read: false }\nskills: { preload: [one] }\n"));
 	const snapshot = discover(true, ["one"]);
-	assert.ok(Object.isFrozen(snapshot) && Object.isFrozen(snapshot.definitions) && Object.isFrozen(snapshot.definitions[0].tools[0]) && Object.isFrozen(snapshot.definitions[0].skills.preload));
+	assert.ok(Object.isFrozen(snapshot) && Object.isFrozen(snapshot.definitions) && Object.isFrozen(snapshot.definitions[0].tools[0]) && Object.isFrozen(snapshot.definitions[0].model) && Object.isFrozen(snapshot.definitions[0].model?.[0]) && Object.isFrozen(snapshot.definitions[0].skills.preload));
 	assert.throws(() => { (snapshot.definitions[0].tools[0] as { enabled: boolean }).enabled = true; }, TypeError);
 }));

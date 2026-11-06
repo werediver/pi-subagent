@@ -56,7 +56,7 @@ test("on-disk subagent.json files have no effect and produce no warnings", withS
 	await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
 	try {
 		harness.beforeStart(ctx, ["delegate"]);
-		assert.match(failure(await harness.execute(ctx, { title: "test", input: "test", agent: "worker" })), /root-provider\/configured-name/);
+		assert.match(failure(await harness.execute(ctx, { title: "test", input: "test", agent: "worker" })), /"root-provider"\/"configured-name"/);
 		assert.equal(notifications.length, 0);
 	} finally { await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx); }
 }));
@@ -70,11 +70,11 @@ test("root model context follows lifecycle events and stops on shutdown", withSa
 	await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
 	assert.equal(harness.beforeStart(ctx, []), undefined);
 	const request = { title: "test", input: "test", agent: "worker" };
-	assert.match(failure(await harness.execute(ctx, request)), /first\/unavailable/);
+	assert.match(failure(await harness.execute(ctx, request)), /"first"\/"unavailable"/);
 	Object.assign(ctx, { model: second });
 	await harness.emit("model_select", { type: "model_select", model: second, previousModel: first, source: "set" }, ctx);
 	await harness.emit("thinking_level_select", { type: "thinking_level_select", level: "high", previousLevel: "low" }, ctx);
-	assert.match(failure(await harness.execute(ctx, request)), /second\/unavailable/);
+	assert.match(failure(await harness.execute(ctx, request)), /"second"\/"unavailable"/);
 	await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx);
 	assert.match(failure(await harness.execute(ctx, request)), /root session is unavailable/i);
 }));

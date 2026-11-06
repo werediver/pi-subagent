@@ -66,10 +66,10 @@ test("live provider changes update the digest and openings without rebuilding th
 		// No intervening beforeStart or model_select: execution must resolve again.
 		Object.assign(ctx, { model: rootB });
 		const unavailable = failure(await harness.execute(ctx, request));
-		assert.match(unavailable, /provider-b\/shared-id/);
+		assert.match(unavailable, /"provider-b"\/"shared-id"/);
 		assert.doesNotMatch(unavailable, /unknown agent/i);
 		assert.equal(options(prompt(harness, ctx)), "", "no agent is currently available");
-		assert.match(failure(await harness.execute(ctx, request)), /provider-b\/shared-id/);
+		assert.match(failure(await harness.execute(ctx, request)), /"provider-b"\/"shared-id"/);
 		for (const agent of ["missing", "rejected", "replacement"]) {
 			assert.match(failure(await harness.execute(ctx, { ...request, agent })), /unknown agent/i);
 		}
@@ -80,7 +80,7 @@ test("live provider changes update the digest and openings without rebuilding th
 		// any attempt to create a child session with the fake provider.
 		Object.assign(ctx, { model: undefined });
 		const noRoot = failure(await harness.execute(ctx, request));
-		assert.match(noRoot, /needs a provider.*root session has no active model/i);
+		assert.match(noRoot, /no root provider.*shared-id/i);
 		assert.doesNotMatch(noRoot, /unknown agent/i);
 		assert.equal(options(prompt(harness, ctx)), "");
 		Object.assign(ctx, { model: rootA });

@@ -46,21 +46,40 @@ test("omitted model inherits the immediate caller model and thinking level", () 
 	assert.throws(() => resolve(agentDefinition(), context(undefined), undefined), { message: "The parent session has no active model." });
 });
 
-test("frontmatter model names are concrete IDs, including former aliases", () => {
+test("model candidates resolve in order with exact opaque provider and ID matching", () => {
 	const ctx = context(callerModel, allModels);
-	assert.deepEqual(resolve(agentDefinition({ model: { name: "shared" } }), ctx), { model: rootShared });
-	assert.deepEqual(resolve(agentDefinition({ model: { name: "shared", provider: "explicit-provider" } }), ctx), { model: explicitShared });
-	assert.deepEqual(resolve(agentDefinition({ model: { name: "parent" } }), ctx), { model: rootParentNamed });
-	assert.deepEqual(resolve(agentDefinition({ model: { name: "main" } }), ctx), { model: rootMainNamed });
-	assert.deepEqual(resolveAgentModel(agentDefinition({ model: { name: "shared", provider: "explicit-provider" } }), context(undefined, allModels), undefined), { model: explicitShared });
+	assert.deepEqual(resolve(agentDefinition({ model: [{ id: "shared" }] }), ctx), { model: rootShared });
+	assert.deepEqual(resolve(agentDefinition({ model: [{ id: "shared", provider: "explicit-provider" }, { id: "shared" }] }), ctx), { model: explicitShared });
+	assert.deepEqual(resolve(agentDefinition({ model: [{ id: "shared", provider: "explicit-provider" }] }), ctx), { model: explicitShared });
+	assert.deepEqual(resolve(agentDefinition({ model: [{ id: "parent" }] }), ctx), { model: rootParentNamed });
+	assert.deepEqual(resolve(agentDefinition({ model: [{ id: "main" }] }), ctx), { model: rootMainNamed });
+	assert.deepEqual(resolve(agentDefinition({ model: [{ id: "absent" }, { id: "shared", provider: "explicit-provider" }] }), ctx), { model: explicitShared });
+	assert.deepEqual(resolveAgentModel(agentDefinition({ model: [{ id: "shared" }, { id: "shared", provider: "explicit-provider" }] }), context(undefined, allModels), undefined), { model: explicitShared });
+	const opaque = model("Provider/Name", "Models/ID");
+	assert.deepEqual(resolve(agentDefinition({ model: [{ id: "Models/ID", provider: "Provider/Name" }] }), context(undefined, [opaque]), undefined), { model: opaque });
+});
+
+test("mixed string and mapping entries resolve in their declared order", () => {
+	const snapshot = buildAgentSnapshot({ sources: [
+		{ filename: "string-first.md", content: "---\nname: string-first\nmodel:\n  - shared\n  - { id: shared, provider: explicit-provider }\n---\n" },
+		{ filename: "mapping-first.md", content: "---\nname: mapping-first\nmodel:\n  - { id: shared, provider: explicit-provider }\n  - shared\n---\n" },
+	] }, []);
+	assert.deepEqual(snapshot.diagnostics, []);
+	assert.deepEqual(snapshot.definitions.map(({ model: candidates }) => candidates), [
+		[{ id: "shared" }, { id: "shared", provider: "explicit-provider" }],
+		[{ id: "shared", provider: "explicit-provider" }, { id: "shared" }],
+	]);
+	const ctx = context(callerModel, allModels);
+	assert.deepEqual(resolve(snapshot.definitions[0], ctx), { model: rootShared });
+	assert.deepEqual(resolve(snapshot.definitions[1], ctx), { model: explicitShared });
 });
 
 test("concrete model lookup uses the live root provider and root registry", () => {
 	const caller = context(callerModel, [callerShared]);
 	const rootRegistry = context(rootModel, [rootShared]).modelRegistry;
-	assert.deepEqual(resolve(agentDefinition({ model: { name: "shared" } }), caller, rootSettings, rootRegistry), { model: rootShared });
-	assert.throws(() => resolve(agentDefinition({ model: { name: "shared" } }), caller, rootSettings, context(rootModel, [callerShared]).modelRegistry), AgentModelNotFoundError);
-	assert.throws(() => resolveAgentModel(agentDefinition({ model: { name: "shared" } }), caller, undefined), /needs a provider because the root session has no active model/);
+	assert.deepEqual(resolve(agentDefinition({ model: [{ id: "shared" }] }), caller, rootSettings, rootRegistry), { model: rootShared });
+	assert.throws(() => resolve(agentDefinition({ model: [{ id: "shared" }] }), caller, rootSettings, context(rootModel, [callerShared]).modelRegistry), AgentModelNotFoundError);
+	assert.throws(() => resolveAgentModel(agentDefinition({ model: [{ id: "shared" }] }), caller, undefined), /\"<no root provider>\"\/\"shared\"/);
 });
 
 test("agent availability re-resolves concrete models against live root model and registry", () => {
@@ -69,23 +88,25 @@ test("agent availability re-resolves concrete models against live root model and
 			{ filename: "a.md", content: "---\nname: implicit\nmodel: shared\n---\n" },
 			{ filename: "b.md", content: "---\nname: inherited\n---\n" },
 			{ filename: "c.md", content: "---\nname: former-parent\nmodel: parent\n---\n" },
-			{ filename: "d.md", content: "---\nname: fixed\nmodel: shared\nprovider: explicit-provider\n---\n" },
+			{ filename: "d.md", content: "---\nname: fixed\nmodel: { id: shared, provider: explicit-provider }\n---\n" },
 			{ filename: "e.md", content: "---\nname: invalid\nprovider: explicit-provider\n---\n" },
+			{ filename: "f.md", content: "---\nname: fallback\nmodel:\n  - id: absent\n  - id: shared\n    provider: explicit-provider\n---\n" },
+			{ filename: "g.md", content: "---\nname: needs-root\nmodel: root-only\n---\n" },
 		],
 	}, []);
 	const caller = context(callerModel, [callerShared]);
 	const mutableModels = [rootShared, rootParentNamed, explicitShared];
 	const registry = context(rootModel, mutableModels).modelRegistry;
 	const names = (root: ModelSettings | undefined) => getAgentAvailability(snapshot, caller, root, registry).map((definition) => definition.name);
-	assert.deepEqual(names(rootSettings), ["implicit", "inherited", "former-parent", "fixed"]);
-	assert.deepEqual(names({ model: model("other-provider", "other") }), ["inherited", "fixed"]);
-	assert.deepEqual(names(undefined), ["inherited", "fixed"]);
+	assert.deepEqual(names(rootSettings), ["implicit", "inherited", "former-parent", "fixed", "fallback"]);
+	assert.deepEqual(names({ model: model("other-provider", "other") }), ["inherited", "fixed", "fallback"]);
+	assert.deepEqual(names(undefined), ["inherited", "fixed", "fallback"]);
 	assert.equal(snapshot.diagnostics.length, 1);
-	assert.match(snapshot.diagnostics[0].reason, /provider.*alongside.*model/i);
+	assert.match(snapshot.diagnostics[0].reason, /top-level provider is no longer supported/);
 
 	mutableModels.push(callerShared);
-	assert.deepEqual(names({ model: { ...rootModel, provider: "caller-provider" } }), ["implicit", "inherited", "fixed"]);
-	assert.deepEqual(snapshot.definitions.map(({ name }) => name), ["implicit", "inherited", "former-parent", "fixed"]);
+	assert.deepEqual(names({ model: { ...rootModel, provider: "caller-provider" } }), ["implicit", "inherited", "fixed", "fallback"]);
+	assert.deepEqual(snapshot.definitions.map(({ name }) => name), ["implicit", "inherited", "former-parent", "fixed", "fallback", "needs-root"]);
 });
 
 test("tool rules default to enabled, preserve available order, and apply last match", () => {
@@ -113,7 +134,7 @@ test("tool patterns are case-sensitive, whole-name globs with literal regex meta
 
 test("digest contains only safely formatted names and optional descriptions", () => {
 	const definitions = [
-		agentDefinition({ name: `evil\n<&\"'\u001b[31mred\u001b[0m`, description: `first\r\nsecond <tag> & \"'\u0000`, prompt: "SECRET_BODY", model: { name: "secret-model" } }),
+		agentDefinition({ name: `evil\n<&\"'\u001b[31mred\u001b[0m`, description: `first\r\nsecond <tag> & \"'\u0000`, prompt: "SECRET_BODY", model: [{ id: "secret-model" }] }),
 		agentDefinition({ name: "plain", prompt: "OTHER_SECRET_BODY" }),
 	];
 	const digest = formatAgentDigest(definitions);
@@ -133,10 +154,10 @@ test("digest contains only safely formatted names and optional descriptions", ()
 	].join("\n"));
 });
 
-test("model errors identify the concrete agent ID and provider", () => {
-	assert.throws(() => resolve(agentDefinition({ model: { name: "missing" } }), context(callerModel, allModels)), (error: unknown) => {
+test("model errors list every attempted provider and ID separately quoted", () => {
+	assert.throws(() => resolve(agentDefinition({ model: [{ id: "missing" }, { id: "also-missing", provider: "explicit-provider" }] }), context(callerModel, allModels)), (error: unknown) => {
 		assert.ok(error instanceof AgentModelNotFoundError);
-		assert.equal(error.message, 'Model root-provider/missing for agent "tester" was not found in the model registry. Register the model or set the agent\'s provider.');
+		assert.equal(error.message, 'None of the model candidates for agent "tester" were found in the live model registry. Attempted: "root-provider"/"missing", "explicit-provider"/"also-missing". Register the models or update the agent\'s model candidates.');
 		return true;
 	});
 });

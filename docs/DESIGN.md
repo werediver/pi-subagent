@@ -16,4 +16,4 @@ Independent child sessions may run concurrently. Dependent work can be staged by
 
 ## Configuration boundary
 
-Agent definitions own child tool access, skills policy, and model selection. A model value is always a concrete ID; omitted model inherits the immediate caller. The selected definition remains bound to the child across continuations.
+Agent definitions own child tool access, skills policy, and model selection. An explicit model specifies one or more ordered concrete candidates; the first exact provider/ID match in the live root registry is selected when building the digest or opening a child. An omitted model inherits the immediate caller's model and thinking level. A registry match does not guarantee runtime, authentication, or request success, and those failures do not trigger fallback. The selected definition and model remain bound to the child across continuations.

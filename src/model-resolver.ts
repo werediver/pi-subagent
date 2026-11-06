@@ -8,8 +8,9 @@ export type ModelSettings = { model: Model<any>; thinkingLevel?: ModelThinkingLe
 type ModelContext = Pick<ExtensionContext, "model" | "thinkingLevel" | "modelRegistry">;
 
 export class AgentModelNotFoundError extends Error {
-	constructor(provider: string, model: string, agent: string) {
-		super(`Model ${provider}/${model} for agent ${JSON.stringify(agent)} was not found in the model registry. Register the model or set the agent's provider.`);
+	constructor(attempted: readonly { readonly provider?: string; readonly id: string }[], agent: string) {
+		const pairs = attempted.map(({ provider, id }) => `${JSON.stringify(provider ?? "<no root provider>")}/${JSON.stringify(id)}`).join(", ");
+		super(`None of the model candidates for agent ${JSON.stringify(agent)} were found in the live model registry. Attempted: ${pairs}. Register the models or update the agent's model candidates.`);
 		this.name = "AgentModelNotFoundError";
 	}
 }
@@ -17,8 +18,8 @@ export class AgentModelNotFoundError extends Error {
 /**
  * Resolve an agent's concrete model ID against the live root model context.
  * An omitted model inherits the immediate caller's model and thinking level.
- * Concrete model IDs use their explicit provider, or the current root provider
- * when no provider is specified.
+ * Concrete candidates use their explicit provider, or the current root provider
+ * when no provider is specified, and are tried in order.
  */
 export function resolveAgentModel(
 	definition: AgentDefinition,
@@ -41,13 +42,18 @@ function resolveConcreteAgentModel(
 	rootModel: ModelSettings | undefined,
 	rootRegistry: ModelContext["modelRegistry"],
 ): ModelSettings {
-	const model = definition.model;
-	if (!model) throw new Error(`Agent ${JSON.stringify(definition.name)} does not reference a concrete model ID.`);
-	const provider = model.provider ?? rootModel?.model.provider;
-	if (!provider) throw new Error(`Agent ${JSON.stringify(definition.name)} needs a provider because the root session has no active model.`);
-	const found = rootRegistry.getAll().find((candidate) => candidate.id === model.name && candidate.provider === provider);
-	if (!found) throw new AgentModelNotFoundError(provider, model.name, definition.name);
-	return { model: found };
+	const candidates = definition.model;
+	if (!candidates?.length) throw new Error(`Agent ${JSON.stringify(definition.name)} does not reference a concrete model candidate.`);
+	const models = rootRegistry.getAll();
+	const attempted: { provider?: string; id: string }[] = [];
+	for (const candidate of candidates) {
+		const provider = candidate.provider ?? rootModel?.model.provider;
+		attempted.push({ ...(provider === undefined ? {} : { provider }), id: candidate.id });
+		if (provider === undefined) continue;
+		const found = models.find((model) => model.id === candidate.id && model.provider === provider);
+		if (found) return { model: found };
+	}
+	throw new AgentModelNotFoundError(attempted, definition.name);
 }
 
 /** Return currently resolvable definitions in snapshot discovery order without changing the snapshot. */

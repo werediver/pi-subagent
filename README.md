@@ -46,15 +46,18 @@ A child starts with its own conversation, so include the relevant task context. 
 An agent can add these optional frontmatter fields:
 
 ```yaml
-model: claude-sonnet-4
-# provider: anthropic     # optional
+model:
+  - { id: claude-sonnet-4, provider: anthropic }
+  - other-model  # uses the live root provider
 thinkingLevel: high
 skills:
   allowDiscovery: false
   preload: [code-review]  # must name an existing discovered skill
 ```
 
-`model` always names a concrete model ID; values such as `parent` and `main` have no special meaning. Omitting `model` inherits the immediate caller’s model and thinking level. With an explicit model ID, `provider` may select its provider; otherwise the current root provider is used. An explicit `thinkingLevel` overrides the resolved level; without one, concrete model selections use the new child session’s default. Root model changes affect later agent availability and openings without `/reload`; existing children retain their selected configuration.
+`model` accepts a string ID, one `{ id, provider? }` mapping, or a non-empty ordered list mixing strings and mappings. A string, whether alone or in a list, is shorthand for an ID-only candidate. IDs are opaque, including slashes; values such as `parent` and `main` have no special meaning. A candidate without `provider` uses the live root provider. Candidates are checked in order by exact `(provider, id)` against the live root registry; the first match is selected.
+
+Omitting `model` inherits the immediate caller’s model and thinking level. An explicit `thinkingLevel` overrides the resolved level; without one, concrete model selections use the new child session’s default. Resolution is live when building the digest and opening a child, so root model or registry changes affect later availability and openings without `/reload`; existing children retain their selected model and configuration across continuations. A registry match does not guarantee authentication or request success, and runtime, authentication, or request failures do not trigger fallback to another candidate.
 
 `allowDiscovery` defaults to `true`. Setting it to `false` hides the skill catalog from the child’s prompt, but does not block explicit `/skill:name` expansion. `preload` adds full skill bodies regardless of catalog visibility.
 

@@ -5,7 +5,7 @@ A delegation names a predefined agent rather than assembling capabilities at eac
 ## Terminology
 
 - **Agent definition** (or **agent**): a Markdown file discovered from an `agents/` directory. It has a name, optional description, frontmatter configuration, and an optional system-prompt body.
-- **Agent snapshot**: the immutable set of statically validated agent definitions. It is created in the root session and shared with descendants. It does not freeze the active root model/provider; descendants resolve against the root session's current model context.
+- **Agent snapshot**: the immutable set of statically validated agent definitions. It is created in the root session and shared with descendants. It does not freeze the root model/provider or registry; descendants resolve against the live root model context.
 - **Agent digest**: the available agent names and optional descriptions appended to a session's system prompt when delegation is possible. It contains no agent bodies or source-scope information.
 
 ## Agent definition files
@@ -23,8 +23,7 @@ tools:
   find: true
   ls: true
   bash: true
-model: claude-sonnet-4
-provider: anthropic
+model: { id: claude-sonnet-4, provider: anthropic }
 thinkingLevel: high
 skills:
   allowDiscovery: false
@@ -39,13 +38,14 @@ You are a senior code reviewer. ...
 | `name` | Yes, non-empty | Identifier used by the `delegate` tool and shown in the digest. Names are compared exactly after trimming surrounding whitespace. |
 | `description` | No | One-line purpose shown in the digest. |
 | `tools` | No | Ordered mapping from tool-name patterns to booleans. Omitted means no additional restriction on Pi’s default child tool selection. |
-| `model` | No | A concrete model ID only. Omitted means inherit the calling session's model. |
-| `provider` | No | Provider for a concrete model ID. It is invalid without `model`; when omitted, the live root session model's provider is used. |
+| `model` | No | A string ID, one `{ id, provider? }` mapping, or a non-empty ordered list mixing strings and mappings. Omitted means inherit the immediate caller's model and thinking level. |
 | `thinkingLevel` | No | One of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. |
 | `skills.allowDiscovery` | No | Whether the discovered skill catalog is included in the prompt. Defaults to `true`. |
 | `skills.preload` | No | Skill names whose full bodies are force-loaded. Defaults to empty. |
 
-Model values are never interpreted as aliases or preset names. In particular, `parent` and `main` have no built-in meaning: if either is used as a `model` value, it is looked up as an ordinary concrete model ID. There is no model alias or preset configuration, and the extension does not read `subagent.json`.
+A string, whether alone or in a list, is shorthand for an ID-only candidate. IDs are opaque, including slashes, and are never interpreted as aliases or preset names. In particular, `parent` and `main` have no built-in meaning. There is no model alias or preset configuration, and the extension does not read `subagent.json`.
+
+There is no top-level `provider` field. Migrate `model: x` with `provider: p` to `model: { id: x, provider: p }`.
 
 Tool names are matched case-sensitively against the whole name; `*` is the only wildcard and matches any run of characters, including none. Every tool starts enabled, rules apply in declaration order, and the last matching rule wins. An unmatched tool remains enabled. Patterns need not match a tool in the current session. The mapping shape is validated, but tool names are not required to be known at discovery time. Pi parses mappings as JavaScript objects, so integer-index-like keys are evaluated before other keys regardless of their YAML order.
 
@@ -60,7 +60,7 @@ Agent files follow the existing user/project trust boundary:
 
 The root session creates one snapshot during initial discovery. Trusted project files are considered before user files, with files in each scope ordered lexicographically by path. The first valid definition with a given name is accepted; later definitions with that name are reported and ignored. Thus a valid project definition overrides a user definition. A rejected file does not claim its name, so an invalid project definition does not shadow a valid user definition.
 
-Descendant sessions reuse the same snapshot rather than rediscovering or reparsing files. Each digest build and opening delegation consults the latest root model/provider, including in nested sessions. A root model/provider change therefore affects subsequent digests and delegations without `/reload`. Changes to agent files are picked up by Pi's `/reload`, which rebuilds the snapshot. A runtime reload also invalidates existing child sessions as described in [DESIGN_REUSE.md](./DESIGN_REUSE.md); continuations cannot outlive that reload.
+Descendant sessions reuse the same snapshot rather than rediscovering or reparsing files. Each digest build and opening delegation consults the live root model/provider and registry, including in nested sessions. Changes therefore affect subsequent digests and delegations without `/reload`. Changes to agent files are picked up by Pi's `/reload`, which rebuilds the snapshot. A runtime reload also invalidates existing child sessions as described in [DESIGN_REUSE.md](./DESIGN_REUSE.md); continuations cannot outlive that reload.
 
 ## Validation
 
@@ -70,20 +70,21 @@ Validation covers:
 
 - a non-empty `name`;
 - a valid `tools` mapping with non-empty patterns and boolean values;
-- a non-empty concrete `model` ID when present;
-- a `provider` that is specified only alongside `model`; model/provider availability is checked against the current root model registry at digest and invocation time;
+- a valid `model` when present: a non-empty string ID, a candidate mapping with an ID and optional provider, or a non-empty list of strings and candidate mappings;
 - an accepted `thinkingLevel`;
 - a well-formed `skills` mapping whose `preload` names exist.
 
-A known agent may be unavailable in the current model context—for example, when a concrete model ID is not registered for the current default provider. It is omitted from that context's digest and becomes available again if the root model/provider changes to a compatible context. If requested while unavailable, opening the delegation fails with the current resolution error. These changes do not mutate or rebuild the agent snapshot.
+A known agent may be unavailable in the current model context—for example, when no candidate matches the live root registry. It is omitted from that context's digest and becomes available again if the root model/provider or registry changes to a compatible context. If requested while unavailable, opening the delegation fails with the current resolution error. These changes do not mutate or rebuild the agent snapshot.
 
 ## Model selection
 
 When `model` is omitted, an agent inherits the immediate calling session's current model and thinking level. Its explicit `thinkingLevel`, if any, overrides the inherited level. This makes nested delegation follow the actual caller, not automatically the root session.
 
-When `model` is present, it is always resolved as a concrete model ID. The explicit frontmatter `provider` is used when present; otherwise the provider from the live root session model is used. The model is looked up by the `(provider, ID)` pair in the live root registry. A concrete selection does not inherit the root or caller thinking level; an explicit frontmatter `thinkingLevel` applies, otherwise the new child session uses its normal default. A concrete model with no explicit provider cannot resolve while the root has no active model/provider.
+When `model` is present, its candidates are checked in order against the live root registry by exact `(provider, id)`; the first match is selected. A candidate with no provider uses the live root session model's provider and cannot resolve if the root has no active model/provider. A concrete selection does not inherit the root or caller thinking level; an explicit `thinkingLevel` applies, otherwise the new child session uses its normal default.
 
-Root model/provider changes affect later prompt digests and opening delegations immediately; they do not require `/reload`. Existing children retain their selected model and configuration.
+A registry match is not a guarantee of authentication or request success. Child sessions have their own model runtimes, and a provider registered dynamically only in the root does not automatically supply its implementation or credentials to children. There is no fallback to another candidate after a runtime, authentication, or request failure.
+
+Resolution occurs for each digest build and opening delegation. Root model/provider or registry changes affect later digests and openings without `/reload`; the selected model and definition remain bound to an existing child across continuations.
 
 ## Skills policy
 

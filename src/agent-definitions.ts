@@ -4,12 +4,14 @@ import { CONFIG_DIR_NAME, parseFrontmatter } from "@earendil-works/pi-coding-age
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 type DeepReadonly<T> = T extends (...args: never[]) => unknown ? T : T extends object ? { readonly [K in keyof T]: DeepReadonly<T[K]> } : T;
 
+export type AgentModelCandidate = { readonly id: string; readonly provider?: string };
+
 export type AgentDefinition = {
 	readonly name: string;
 	readonly description?: string;
 	readonly prompt: string;
 	readonly tools: readonly { readonly pattern: string; readonly enabled: boolean }[];
-	readonly model?: { readonly name: string; readonly provider?: string };
+	readonly model?: readonly AgentModelCandidate[];
 	readonly thinkingLevel?: ModelThinkingLevel;
 	readonly skills: { readonly allowDiscovery: boolean; readonly preload: readonly string[] };
 };
@@ -44,6 +46,25 @@ function requiredString(value: unknown, field: string): string {
 	return value.trim();
 }
 
+function parseModelCandidate(value: unknown, field: string): AgentModelCandidate {
+	if (!isRecord(value)) throw new Error(`${field} must be a mapping with id and optional provider`);
+	for (const key of Object.keys(value)) if (key !== "id" && key !== "provider") throw new Error(`${field} has unsupported field ${JSON.stringify(key)}; expected only id and provider`);
+	const id = requiredString(value.id, `${field}.id`);
+	const provider = Object.hasOwn(value, "provider") ? requiredString(value.provider, `${field}.provider`) : undefined;
+	return { id, ...(provider === undefined ? {} : { provider }) };
+}
+
+function parseModel(value: unknown): readonly AgentModelCandidate[] {
+	if (typeof value === "string") return [{ id: requiredString(value, "model") }];
+	if (Array.isArray(value)) {
+		if (value.length === 0) throw new Error("model candidate list must not be empty");
+		return value.map((candidate, index) => typeof candidate === "string"
+			? { id: requiredString(candidate, `model[${index}]`) }
+			: parseModelCandidate(candidate, `model[${index}]`));
+	}
+	return [parseModelCandidate(value, "model")];
+}
+
 function parseDefinition(content: string, skillNames: ReadonlySet<string>, report: (reason: string) => void): AgentDefinition {
 	const normalized = content.replace(/\r\n?/g, "\n");
 	if (!normalized.startsWith("---\n")) throw new Error("expected an opening --- frontmatter delimiter on its own line");
@@ -56,6 +77,7 @@ function parseDefinition(content: string, skillNames: ReadonlySet<string>, repor
 	if (!isRecord(frontmatter)) throw new Error("frontmatter must be a mapping");
 	const known = new Set(["name", "description", "tools", "model", "provider", "thinkingLevel", "skills"]);
 	for (const key of Object.keys(frontmatter)) if (!known.has(key)) report(`unknown frontmatter field ${JSON.stringify(key)} (ignored)`);
+	if (Object.hasOwn(frontmatter, "provider")) throw new Error("top-level provider is no longer supported; migrate model: x + provider: p to model: { id: x, provider: p }");
 	const name = requiredString(frontmatter.name, "name");
 	const description = Object.hasOwn(frontmatter, "description") ? requiredString(frontmatter.description, "description") : undefined;
 	if (description?.includes("\n") || description?.includes("\r")) throw new Error("description must be one line");
@@ -67,10 +89,7 @@ function parseDefinition(content: string, skillNames: ReadonlySet<string>, repor
 			rules.push({ pattern, enabled });
 		}
 	}
-	const modelName = Object.hasOwn(frontmatter, "model") ? requiredString(frontmatter.model, "model") : undefined;
-	const provider = Object.hasOwn(frontmatter, "provider") ? requiredString(frontmatter.provider, "provider") : undefined;
-	if (provider !== undefined && modelName === undefined) throw new Error("provider is allowed only alongside a concrete model ID");
-	const model = modelName === undefined ? undefined : { name: modelName, ...(provider === undefined ? {} : { provider }) };
+	const model = Object.hasOwn(frontmatter, "model") ? parseModel(frontmatter.model) : undefined;
 	const thinkingLevel = frontmatter.thinkingLevel;
 	if (Object.hasOwn(frontmatter, "thinkingLevel") && (typeof thinkingLevel !== "string" || !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(thinkingLevel))) throw new Error("invalid thinkingLevel");
 	let allowDiscovery = true;

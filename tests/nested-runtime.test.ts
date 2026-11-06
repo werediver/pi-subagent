@@ -62,6 +62,7 @@ export default function (pi) {
           { title: "Missing provider", input: "must not run dynamic", agent: "dynamic" },
           { title: "Missing main", input: "must not run main", agent: "main" },
           { title: "Caller inheritance", input: "no root inherited leaf", agent: "inherit" },
+          { title: "Explicit fallback", input: "no root fallback leaf", agent: "fallback" },
         ];
         args = calls[turnResults.length];
       }
@@ -119,6 +120,7 @@ test("nested sessions share the agent snapshot while root models remain live, un
 	putAgent("grandchild", nestedRules, "AGENT-BODY-GRANDCHILD");
 	putAgent("main", `model: main\nthinkingLevel: high\n${leafRules}`, "MAIN-AGENT-BODY");
 	putAgent("dynamic", `model: switch-target\nthinkingLevel: medium\n${leafRules}`, "DYNAMIC-AGENT-BODY");
+	putAgent("fallback", `model:\n  - id: main\n  - id: alternate-model\n    provider: alternate-test\n${leafRules}`, "FALLBACK-AGENT-BODY");
 	putAgent("parent", `model: parent\nthinkingLevel: low\n${leafRules}`, "PARENT-AGENT-BODY");
 	putAgent("inherit", leafRules, "INHERIT-AGENT-BODY");
 	writeFakeProvider(agentDir, logPath);
@@ -283,15 +285,18 @@ test("nested sessions share the agent snapshot while root models remain live, un
 		assert.match(noRootRuns[0].systemPrompt, /NESTED-SKILL-BODY/);
 		assert.match(noRootRuns[0].systemPrompt, /ROOT-ONLY-SKILL-BODY/);
 		const noRootResults = noRootRuns.at(-1).turnResults;
-		assert.equal(noRootResults.length, 3);
+		assert.equal(noRootResults.length, 4);
 		assert.equal(noRootResults[0].isError, true);
-		assert.match(JSON.stringify(noRootResults[0].content), /needs a provider because the root session has no active model/);
+		assert.match(JSON.stringify(noRootResults[0].content), /no root provider/);
 		assert.equal(noRootResults[1].isError, true);
-		assert.match(JSON.stringify(noRootResults[1].content), /needs a provider because the root session has no active model/);
+		assert.match(JSON.stringify(noRootResults[1].content), /no root provider/);
 		assert.equal(noRootResults[2].isError, false);
+		assert.equal(noRootResults[3].isError, false);
 		assert.equal(byPrompt("must not run dynamic").length, 0);
 		assert.equal(byPrompt("must not run main").length, 0);
 		assert.equal(byPrompt("no root inherited leaf")[0].provider, "nested-test");
+		assert.equal(byPrompt("no root fallback leaf")[0].provider, "alternate-test");
+		assert.equal(byPrompt("no root fallback leaf")[0].model, "alternate-model");
 
 		// Shutdown invalidates the old tree; a fresh factory acts as reload and
 		// snapshots the replacement agent definitions rather than inheriting the old tree.
