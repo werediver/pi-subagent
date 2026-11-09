@@ -223,6 +223,7 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 				const onAbortDuringSetup = () => { if (!setupFinished) resolveSetupCancellation(); };
 				const opening = registry.trackOpening(async () => {
 					const nestedRegistry = new ChildRegistry();
+					let reportedUsage: DelegateCmdResult["usage"];
 					let child: ChildSession | undefined;
 					let createdSession: AgentSession | undefined;
 					let shutdownSession: (() => Promise<void>) | undefined;
@@ -276,6 +277,7 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 						// must not race the initial request result against its signal anymore.
 						finishSetup();
 						const result = await child.queue.startInitial({ input: params.input, signal: abortSignal, onUpdate, theme: ctx.ui.theme }, batch);
+						reportedUsage = result.usage;
 						if (result.status !== "completed") { registry.remove(child.session.sessionId, child); await disposeChild(child); return result; }
 						result.sessionId = child.session.sessionId;
 						return result;
@@ -290,7 +292,9 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 								}
 							}
 						} catch (cleanupError) { console.warn(`Could not fully clean up a child session: ${String(cleanupError)}`); }
-						return resultError(abortSignal.aborted ? "cancelled" : "failed", error instanceof Error ? error.message : String(error));
+						const failure = resultError(abortSignal.aborted ? "cancelled" : "failed", error instanceof Error ? error.message : String(error));
+						if (reportedUsage) failure.usage = reportedUsage;
+						return failure;
 					} finally { finishSetup(); }
 				});
 				abortSignal.addEventListener("abort", onAbortDuringSetup, { once: true });

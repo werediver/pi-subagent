@@ -1,10 +1,12 @@
 import { escapeXml } from "./text.ts";
+import type { ReportedUsage } from "./usage.ts";
 
 export type DelegateCmdResult = {
 	status: "completed" | "failed" | "cancelled";
 	sessionId?: string;
 	text?: string;
 	error?: string;
+	usage?: ReportedUsage;
 };
 
 export function resultError(status: "failed" | "cancelled", error: string): DelegateCmdResult {
@@ -26,6 +28,7 @@ export function createDelegateToolResult(result: DelegateCmdResult) {
 		content: [{ type: "text" as const, text: formatDelegateResult(result) }],
 		details: result,
 		...(result.status !== "completed" ? { isError: true } : {}),
+		...(result.usage ? { usage: result.usage } : {}),
 	};
 }
 

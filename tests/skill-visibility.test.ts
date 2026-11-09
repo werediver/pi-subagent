@@ -15,7 +15,7 @@ function writeProvider(agentDir: string, logPath: string, discoveredSkillPath: s
 	mkdirSync(join(agentDir, "extensions"), { recursive: true });
 	writeFileSync(join(agentDir, "extensions", "visibility-provider.js"), `
 import { appendFileSync } from "node:fs";
-import { createAssistantMessageEventStream } from ${JSON.stringify(aiPath)};
+import { createAssistantMessageEventStream, getSystemMessageText } from ${JSON.stringify(aiPath)};
 import { Type } from ${JSON.stringify(typeboxPath)};
 export default function (pi) {
   const lifecycle = (event, ctx) => appendFileSync(${JSON.stringify(logPath + ".lifecycle")}, JSON.stringify({ type: event.type, reason: event.reason, id: ctx.sessionManager.getSessionId() }) + "\\n");
@@ -41,7 +41,15 @@ export default function (pi) {
       const users = context.messages.filter(m => m.role === "user").map(m => typeof m.content === "string" ? m.content : m.content.map(p => p.text || "").join(""));
       const lastUserIndex = context.messages.findLastIndex(m => m.role === "user");
       const results = context.messages.slice(lastUserIndex + 1).filter(m => m.role === "toolResult");
-      appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({ systemPrompt: context.systemPrompt, users, results, tools: (context.tools || []).map(t => t.name) }) + "\\n");
+      const systemMessage = context.messages.find(m => m.role === "system");
+      const systemPrompt = context.systemPrompt ?? (systemMessage ? getSystemMessageText(systemMessage) : "");
+      const activeTools = new Map();
+      for (const entry of context.messages) if (entry.role === "system") {
+        for (const tool of entry.toolsRemoved || []) activeTools.delete(tool.name);
+        for (const tool of entry.toolsAdded || []) activeTools.set(tool.name, tool);
+      }
+      const tools = context.tools ? context.tools.map(t => t.name) : [...activeTools.keys()];
+      appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({ systemPrompt, users, results, tools }) + "\\n");
       const message = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id,
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "pending", timestamp: Date.now() };

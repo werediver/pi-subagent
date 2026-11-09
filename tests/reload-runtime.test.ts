@@ -21,7 +21,7 @@ test("session reload refreshes captured agent definitions and Pi resources and i
 	const aiPath = fileURLToPath(import.meta.resolve("@earendil-works/pi-ai"));
 	writeFileSync(join(agentDir, "extensions", "fake-provider.js"), `
 import { appendFileSync } from "node:fs";
-import { createAssistantMessageEventStream } from ${JSON.stringify(aiPath)};
+import { createAssistantMessageEventStream, getSystemMessageText } from ${JSON.stringify(aiPath)};
 export default function (pi) {
   pi.registerProvider("reload-fake", {
     baseUrl: "https://invalid.example", apiKey: "fake", api: "reload-fake-api",
@@ -33,7 +33,9 @@ export default function (pi) {
       const prompt = typeof lastUser?.content === "string" ? lastUser.content : (lastUser?.content || []).map(p => p.text || "").join("");
       const lastUserIndex = context.messages.findLastIndex(m => m.role === "user");
       const turnResults = context.messages.slice(lastUserIndex + 1).filter(m => m.role === "toolResult");
-      appendFileSync(${JSON.stringify(providerLog)}, JSON.stringify({ prompt, results: turnResults.length, systemPrompt: context.systemPrompt, reasoning: options?.reasoning }) + "\\n");
+      const systemMessage = context.messages.find(m => m.role === "system");
+      const systemPrompt = context.systemPrompt ?? (systemMessage ? getSystemMessageText(systemMessage) : "");
+      appendFileSync(${JSON.stringify(providerLog)}, JSON.stringify({ prompt, results: turnResults.length, systemPrompt, reasoning: options?.reasoning }) + "\\n");
       const stream = createAssistantMessageEventStream();
       const message = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id,
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
@@ -89,7 +91,7 @@ export default function (pi) {
 				pi.on("session_shutdown", (event) => { lifecycle.push(`shutdown:${event.reason}`); });
 				pi.on("resources_discover", (event) => { lifecycle.push(`discover:${event.reason}`); return { skillPaths: [extraSkill] }; });
 				pi.on("before_agent_start", (event) => {
-					before.push({ prompt: event.prompt, skills: (event.systemPromptOptions.skills ?? []).map(s => ({ name: s.name, description: s.description, hidden: s.disableModelInvocation })) });
+					before.push({ prompt: "prompt" in event ? event.prompt ?? "" : "", skills: (event.systemPromptOptions.skills ?? []).map(s => ({ name: s.name, description: s.description, hidden: s.disableModelInvocation })) });
 				});
 			}],
 		});

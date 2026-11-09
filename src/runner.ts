@@ -3,6 +3,7 @@ import { SubagentToolCallRenderer } from "./subagent-tool-renderer.ts";
 import type { ChildSession } from "./registry.ts";
 import { getDelegateOutcome, resultError, type DelegateCmdResult } from "./result.ts";
 import { oneLine, sanitizeDisplayText } from "./text.ts";
+import { aggregateUsageEntries } from "./usage.ts";
 
 type ActiveTool = { toolName: string; args: unknown; display?: string; toolText?: string };
 type DelegateCmdProgress = { text?: string; currentTool?: string; currentToolArgs?: unknown; currentToolDisplay?: string; toolText?: string; turns: number };
@@ -87,11 +88,16 @@ export async function runChildRequest(child: ChildSession, input: string, signal
 	const abortCleanups: Promise<void>[] = [];
 	const abort = () => { abortCleanups.push(child.session.abort().catch(() => { })); };
 	if (signal.aborted) abort(); else signal.addEventListener("abort", abort, { once: true });
+	let result: DelegateCmdResult;
+	let baselineEntryCount: number | undefined;
 	try {
+		// The queue serializes requests for this child. Sample immediately before
+		// prompt execution so retained-session history is never counted again.
+		baselineEntryCount = child.session.sessionManager.getEntries().length;
 		await child.session.prompt(input);
-		return getDelegateOutcome(child.session.messages.slice(startIndex), signal.aborted);
+		result = getDelegateOutcome(child.session.messages.slice(startIndex), signal.aborted);
 	} catch (error) {
-		return resultError(signal.aborted ? "cancelled" : "failed", error instanceof Error ? error.message : String(error));
+		result = resultError(signal.aborted ? "cancelled" : "failed", error instanceof Error ? error.message : String(error));
 	} finally {
 		signal.removeEventListener("abort", abort);
 		if (abortCleanups.length) await Promise.all(abortCleanups);
@@ -99,4 +105,11 @@ export async function runChildRequest(child: ChildSession, input: string, signal
 		unsubscribe();
 		activeTools.clear();
 	}
+	// Include request-owned abort/cleanup entries, but only usage that Pi persisted
+	// on attributable entries. Standalone asynchronous usage records are excluded.
+	if (baselineEntryCount !== undefined) {
+		const usage = aggregateUsageEntries(child.session.sessionManager.getEntries().slice(baselineEntryCount));
+		if (usage) result.usage = usage;
+	}
+	return result;
 }

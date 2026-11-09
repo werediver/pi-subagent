@@ -14,7 +14,7 @@ function writeFakeProvider(agentDir: string, logPath: string) {
 	const aiPath = fileURLToPath(import.meta.resolve("@earendil-works/pi-ai"));
 	const source = `
 import { appendFileSync } from "node:fs";
-import { createAssistantMessageEventStream } from ${JSON.stringify(aiPath)};
+import { createAssistantMessageEventStream, getSystemMessageText } from ${JSON.stringify(aiPath)};
 const log = (value) => appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(value) + "\\n");
 export default function (pi) {
   log({ type: "factory" });
@@ -27,14 +27,22 @@ export default function (pi) {
       const stream = createAssistantMessageEventStream();
       const users = context.messages.filter(m => m.role === "user").map(m => typeof m.content === "string" ? m.content : m.content.map(p => p.text || "").join(""));
       const results = context.messages.filter(m => m.role === "toolResult");
+      const systemMessage = context.messages.find(m => m.role === "system");
+      const systemPrompt = context.systemPrompt ?? (systemMessage ? getSystemMessageText(systemMessage) : "");
+      const activeTools = new Map();
+      for (const entry of context.messages) if (entry.role === "system") {
+        for (const tool of entry.toolsRemoved || []) activeTools.delete(tool.name);
+        for (const tool of entry.toolsAdded || []) activeTools.set(tool.name, tool);
+      }
+      const toolNames = context.tools ? context.tools.map(t => t.name) : [...activeTools.keys()];
       const lastUserIndex = context.messages.findLastIndex(m => m.role === "user");
       const turnResults = context.messages.slice(lastUserIndex + 1).filter(m => m.role === "toolResult");
-      log({ type: "request", provider: model.provider, model: model.id, reasoning: options?.reasoning, systemPrompt: context.systemPrompt, users, results, turnResults, tools: (context.tools || []).map(t => t.name) });
+      log({ type: "request", provider: model.provider, model: model.id, reasoning: options?.reasoning, systemPrompt, users, results, turnResults, tools: toolNames });
       if (model.provider === "nested-test" && users.at(-1) === "fail after selection") throw new Error("intentional selected model failure");
       if (users.at(-1) === "fail continuation") throw new Error("intentional continuation failure");
       const message = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id,
-        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3,
+          cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, total: 3 } },
         stopReason: "pending", timestamp: Date.now() };
       stream.push({ type: "start", partial: message });
       const prompt = users.at(-1);
@@ -171,7 +179,12 @@ test("nested sessions share the agent snapshot while root models remain live, un
 		assert.match(unknownAgent.error!, /unknown.*agent|agent.*unknown/i);
 		const records = () => readFileSync(logPath, "utf8").trim().split("\n").map(line => JSON.parse(line));
 		const requests = () => records().filter(r => r.type === "request");
-		const initial = (await harness.execute(ctx, { title: "Child", input: "child initial", agent: "child" })).details as DelegateCmdResult;
+		const initialToolResult = await harness.execute(ctx, { title: "Child", input: "child initial", agent: "child" });
+		const initial = initialToolResult.details as DelegateCmdResult;
+		assert.deepEqual(initialToolResult.usage, {
+			input: 3, output: 6, cacheRead: 0, cacheWrite: 0, totalTokens: 9,
+			cost: { input: 3, output: 6, cacheRead: 0, cacheWrite: 0, total: 9 },
+		}, "child assistant usage plus nested tool-result usage is reported once");
 		assert.equal(initial.status, "completed", JSON.stringify(initial));
 		assert.ok(initial.sessionId);
 		assert.equal(initial.text, "child answer");
@@ -195,6 +208,10 @@ test("nested sessions share the agent snapshot while root models remain live, un
 		assert.doesNotMatch(grandchild.systemPrompt, /AGENT-BODY-CHILD|ROOT-ONLY-SKILL-BODY/);
 		assert.deepEqual(grandchild.users, ["grandchild prompt"]);
 		assert.equal(childAfterTool.results[0].isError, false);
+		assert.deepEqual(childAfterTool.results[0].usage, {
+			input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3,
+			cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, total: 3 },
+		}, "the nested delegation usage is persisted on the child tool-result entry");
 		const grandchildId = childAfterTool.results[0].details?.sessionId;
 		assert.ok(grandchildId);
 		assert.notEqual(grandchildId, initial.sessionId);

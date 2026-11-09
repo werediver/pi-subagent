@@ -1,9 +1,8 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { AgentDefinition, AgentSnapshot } from "./agent-definitions.ts";
 import { escapeXml, oneLine } from "./text.ts";
 
-export type ModelSettings = { model: Model<any>; thinkingLevel?: ModelThinkingLevel };
+export type ModelSettings = { model: NonNullable<ExtensionContext["model"]>; thinkingLevel?: ExtensionContext["thinkingLevel"] };
 
 type ModelContext = Pick<ExtensionContext, "model" | "thinkingLevel" | "modelRegistry">;
 

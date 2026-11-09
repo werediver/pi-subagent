@@ -10,7 +10,7 @@ The extension creates child sessions and returns their results. A new child does
 
 An opening delegation names an `agent` and supplies a non-empty `title` and `input`. The caller must include relevant context in `input`. A continuation supplies a previously returned session ID instead of an agent and builds on the existing child conversation. See the [invocation contract](./DESIGN_DEF.md#invocation) and [child session reuse](./DESIGN_REUSE.md).
 
-Results are returned as labeled tool output, not as unlabeled user messages. The [result contract](./DESIGN_REUSE.md#results) defines statuses, session IDs, and the caller-facing envelope.
+Results are returned as labeled tool output, not as unlabeled user messages. The [result contract](./DESIGN_REUSE.md#results) defines statuses, session IDs, and the caller-facing envelope. [Usage accounting](./DESIGN_REUSE.md#usage-accounting) reports attributable usage per invocation separately from that envelope.
 
 Independent child sessions may run concurrently. Dependent work can be staged by passing an earlier result into a later invocation, or by continuing the same child. Subagents may delegate independent subtasks when their agent's tool rules leave `delegate` active, so delegation can be nested.
 

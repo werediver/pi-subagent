@@ -135,6 +135,11 @@ function request(input: string, signal: AbortSignal) {
 	return { input, signal };
 }
 
+const zeroUsage = {
+	input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
 test("real AgentSession caller cancellation during before_agent_start prevents request and tool work", () => withFixture(async (gate, session, cwd) => {
 	const child = { session, cwd } as unknown as ChildSession;
 	const queue = new ContinuationQueue((req) => runChildRequest(child, req.input, req.signal, undefined, undefined, cwd), session);
@@ -166,7 +171,7 @@ test("real AgentSession can continue in a new batch after active continuation ca
 	const queue = new ContinuationQueue((req) => runChildRequest(child, req.input, req.signal, undefined, undefined, cwd), session);
 	const seedBatch = Symbol("seed");
 	const seed = await queue.startInitial(request("seed session", new AbortController().signal), seedBatch);
-	assert.deepEqual(seed, { status: "completed", text: "Answer: seed session" });
+	assert.deepEqual(seed, { status: "completed", text: "Answer: seed session", usage: zeroUsage });
 	assert.equal(gate.modelRequests(), 1);
 	assert.equal(gate.toolExecutions(), 0);
 
@@ -191,7 +196,7 @@ test("real AgentSession can continue in a new batch after active continuation ca
 	assert.equal(session.isIdle, true, "abort cleanup settled the AgentSession before returning");
 
 	const resumed = await queue.enqueue(request("resume after cancellation", new AbortController().signal), Symbol("resume-after-cancellation"));
-	assert.deepEqual(resumed, { status: "completed", text: "Answer: resume after cancellation" });
+	assert.deepEqual(resumed, { status: "completed", text: "Answer: resume after cancellation", usage: zeroUsage });
 	assert.equal(session.isIdle, true, "the resumed continuation also leaves the session idle");
 	assert.equal(gate.modelRequests(), 2, "only the seed and resumed continuation reached the provider");
 	assert.equal(gate.toolExecutions(), 0, "neither successful prompt required the probe tool");

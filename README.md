@@ -4,6 +4,8 @@ This extension adds a `delegate` tool to Pi. A caller selects a predefined agent
 
 ## Setup
 
+Requires Pi coding-agent 1.5.0 or later; older versions are not supported.
+
 Install this directory as a Pi package (for example, `pi install /path/to/pi-subagent`), or load `src/index.ts` as an extension. Then create at least one agent definition, for example `~/.pi/agent/agents/reviewer.md`:
 
 ```markdown
@@ -40,6 +42,12 @@ A successful result includes a session ID. Continue that child with `continue_se
 ```
 
 A child starts with its own conversation, so include the relevant task context. Its agent configuration remains bound across continuations. Continuations of one child are serialized; different children can run concurrently. IDs are in-memory and become invalid on `/reload` or session shutdown. See [child session reuse](docs/DESIGN_REUSE.md) for ordering and results.
+
+## Usage accounting
+
+Each delegation reports newly persisted, attributable usage for that invocation, not the child session’s cumulative history. Usage is carried in `AgentToolResult.usage`, not the model-facing XML. Nested delegation usage is included once through the child’s persisted tool results. Known usage may also be reported on failure or cancellation if the host persists those results.
+
+No usage is estimated. Standalone asynchronous or unassignable usage, such as cache warming, is excluded even if recorded during the invocation. Totals therefore represent settled attributable usage, not invoice parity. See [usage accounting](docs/DESIGN_REUSE.md#usage-accounting).
 
 ## Models and skills
 

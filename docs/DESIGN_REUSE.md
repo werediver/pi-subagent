@@ -33,3 +33,11 @@ Only a successfully completed request exposes the session ID. The agent-readable
 Failures and cancellations use the same envelope with `error` instead of `session_id` and `text`. Text and errors are XML-escaped. The structured `details` metadata may also contain `sessionId` for UI and extension consumers, but `details` is not agent-readable; the XML content is the authoritative caller-facing contract.
 
 Normal completion, Pi errors, and Pi aborts map to `completed`, `failed`, and `cancelled` respectively. Failed or cancelled opening requests are not retained because their IDs were never exposed; failed or cancelled continuations retain the existing child session for later reuse.
+
+## Usage accounting
+
+Each invocation reports only its newly persisted attributable usage, rather than the retained child session's cumulative history. It is propagated through `AgentToolResult.usage`, separately from the model-facing XML envelope. If no attributable usage is reported, none is estimated.
+
+Nested delegation usage is already carried by the child session's persisted `toolResult` usage. It is included once; accounting does not traverse descendant sessions. Known reported usage can also be included on failed or cancelled tool results if the host persists them.
+
+Standalone asynchronous or otherwise unassignable usage entries, such as cache warming, are excluded even when they appear during the invocation's snapshot window. The resulting totals are settled attributable usage, not a guarantee of invoice parity.

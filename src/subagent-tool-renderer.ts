@@ -138,6 +138,10 @@ export class SubagentToolCallRenderer {
 			expanded,
 			showImages: false,
 			isError,
+			durationMs: undefined,
+			outputPad: 0,
+			keyText: () => "",
+			keyHint: () => "",
 		};
 	}
 }
