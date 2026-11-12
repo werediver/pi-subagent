@@ -55,7 +55,7 @@ test("live provider changes update the digest and openings without rebuilding th
 	const targetA = fakeModel("provider-a", "shared-id");
 	const { ctx, notifications } = fakeContext(project, [rootA, rootB, targetA]);
 	const harness = createExtensionHarness();
-	const request = { title: "Test", input: "Test", agent: "worker" };
+	const request = { title: "Test", input: "Test", new_agent: "worker" };
 	await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
 	try {
 		// Sources were captured at startup: changing the file cannot remove the agent.
@@ -70,8 +70,8 @@ test("live provider changes update the digest and openings without rebuilding th
 		assert.doesNotMatch(unavailable, /unknown agent/i);
 		assert.equal(options(prompt(harness, ctx)), "", "no agent is currently available");
 		assert.match(failure(await harness.execute(ctx, request)), /"provider-b"\/"shared-id"/);
-		for (const agent of ["missing", "rejected", "replacement"]) {
-			assert.match(failure(await harness.execute(ctx, { ...request, agent })), /unknown agent/i);
+		for (const newAgent of ["missing", "rejected", "replacement"]) {
+			assert.match(failure(await harness.execute(ctx, { ...request, new_agent: newAgent })), /unknown agent/i);
 		}
 
 		Object.assign(ctx, { model: rootA });
@@ -110,7 +110,7 @@ test("unconfigured exact candidates warn through preflight, digest, and opening,
 		assert.match(notifications[0].message, /pi auth check --provider first-provider/);
 		assert.doesNotMatch(notifications[0].message, /secret|api.?key|token/i);
 		assert.equal(options(prompt(harness, ctx)), "", "agent with unconfigured auth is omitted from digest");
-		const openingError = failure(await harness.execute(ctx, { title: "Test", input: "Test", agent: "worker" }));
+		const openingError = failure(await harness.execute(ctx, { title: "Test", input: "Test", new_agent: "worker" }));
 		assert.match(openingError, /registered, but provider auth is not configured/);
 		assert.match(openingError, /first-provider/);
 		assert.doesNotMatch(openingError, /later-provider/, "the diagnostic identifies the first unconfigured exact match");
@@ -180,7 +180,7 @@ test("root warns once per unresolved model period even when delegate is inactive
 		harness.beforeStart(ctx, []);
 		assert.equal(notifications.length, 2, "a later unavailable period warns again");
 
-		const error = failure(await harness.execute(ctx, { title: "Test", input: "Test", agent: "worker" }));
+		const error = failure(await harness.execute(ctx, { title: "Test", input: "Test", new_agent: "worker" }));
 		assert.match(error, /"provider-b"\/"target-id"/);
 		assert.equal(notifications.length, 2, "manual opening retains its resolution error without warning again");
 	} finally {

@@ -57,7 +57,7 @@ export default function (pi) {
       const prompt = users.at(-1);
       const agent = prompt === "spawn private" ? "private" : prompt === "spawn public" ? "public" : undefined;
       if (agent && results.length === 0) {
-        const call = { type: "toolCall", id: "visibility-call", name: "delegate", arguments: { title: "Descendant", input: "descendant " + agent, agent } };
+        const call = { type: "toolCall", id: "visibility-call", name: "delegate", arguments: { title: "Descendant", input: "descendant " + agent, new_agent: agent } };
         message.content.push(call);
         stream.push({ type: "toolcall_start", contentIndex: 0, partial: message });
         stream.push({ type: "toolcall_end", contentIndex: 0, toolCall: call, partial: message });
@@ -148,30 +148,30 @@ test("real child skill visibility, explicit expansion, descendants and reload", 
 		Object.assign(ctx, { model, modelRegistry: registry });
 		harness.beforeStart(ctx, ["delegate"], "base prompt", rootSkills);
 		const openedIds: string[] = [];
-		const run = async (active: typeof harness, input: string, agentOrId: { agent: string } | { continue_session: string }) => {
-			const result = (await active.execute(ctx, { title: "Visibility", input, ...agentOrId })).details as DelegateCmdResult;
+		const run = async (active: typeof harness, input: string, newAgentOrId: { new_agent: string } | { continue_session: string }) => {
+			const result = (await active.execute(ctx, { title: "Visibility", input, ...newAgentOrId })).details as DelegateCmdResult;
 			assert.equal(result.status, "completed", JSON.stringify(result));
 			assert.ok(result.sessionId);
-			if ("agent" in agentOrId) openedIds.push(result.sessionId);
+			if ("new_agent" in newAgentOrId) openedIds.push(result.sessionId);
 			return result.sessionId;
 		};
-		const privateId = await run(harness, "private initial", { agent: "private" });
+		const privateId = await run(harness, "private initial", { new_agent: "private" });
 		assert.equal(await run(harness, "/skill:other use it explicitly", { continue_session: privateId }), privateId);
 		assert.equal(await run(harness, "/skill:hidden hidden arguments", { continue_session: privateId }), privateId);
 		assert.equal(await run(harness, "/skill:extension-skill extension arguments", { continue_session: privateId }), privateId);
-		await run(harness, "public initial", { agent: "public" });
-		await run(harness, "quiet initial", { agent: "quiet" });
-		await run(harness, "default initial", { agent: "default" });
-		const spawnPrivateId = await run(harness, "spawn private", { agent: "public" });
-		const spawnPublicId = await run(harness, "spawn public", { agent: "private" });
+		await run(harness, "public initial", { new_agent: "public" });
+		await run(harness, "quiet initial", { new_agent: "quiet" });
+		await run(harness, "default initial", { new_agent: "default" });
+		const spawnPrivateId = await run(harness, "spawn private", { new_agent: "public" });
+		const spawnPublicId = await run(harness, "spawn public", { new_agent: "private" });
 
 		// A new child still uses the captured definition until the root is reloaded.
 		putAgent("private", "skills:\n  allowDiscovery: true\n  preload: [preloaded]\n");
-		await run(harness, "before reload", { agent: "private" });
+		await run(harness, "before reload", { new_agent: "private" });
 		await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx);
 		reloaded = createExtensionHarness();
 		reloaded.beforeStart(ctx, ["delegate"], "base prompt", rootSkills);
-		await run(reloaded, "after reload", { agent: "private" });
+		await run(reloaded, "after reload", { new_agent: "private" });
 		await reloaded.emit("session_shutdown", { type: "session_shutdown" }, ctx);
 
 		const records: Request[] = readFileSync(logPath, "utf8").trim().split("\n").map(line => JSON.parse(line));

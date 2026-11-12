@@ -26,7 +26,7 @@ const extensionSourcePath = fileURLToPath(import.meta.url);
 const DelegateCmdParams = Type.Object({
 	title: Type.String({ minLength: 1, description: "Short task description; prefer imperative form" }),
 	input: Type.String({ minLength: 1, description: "The task to delegate or a response in a dialog" }),
-	agent: Type.Optional(Type.String({ description: "Agent definition for a new child session; required when opening" })),
+	new_agent: Type.Optional(Type.String({ description: "Agent definition for a new child session; required when opening" })),
 	continue_session: Type.Optional(Type.String({ description: "The ID of an existing child session to continue; omit or leave empty to start a new child session" })),
 });
 export type DelegateCmdParams = Static<typeof DelegateCmdParams>;
@@ -149,7 +149,7 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 		promptSnippet: "Delegate a task to a subagent in a new or existing child session",
 		promptGuidelines: [
 			"Specify `title` and `input` always",
-			"Specify `agent` when starting a new child session; omit it for continuations",
+			"Specify `new_agent` when starting a new child session; omit it for continuations",
 			"When a task can benefit from the pre-populated context in an existing child session, use `continue_session` with the child session ID returned by a previous delegation request; omit it or leave it empty when starting a new child session.",
 		],
 		parameters: DelegateCmdParams,
@@ -159,7 +159,7 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 			const continuationId = args.continue_session?.trim();
 			const summary = continuationId
 				? `continue ${oneLine(continuationId)}${title}`
-				: `${oneLine(args.agent?.trim() || "(agent required)")}${title}`;
+				: `${oneLine(args.new_agent?.trim() || "(new_agent required)")}${title}`;
 			text.setText(`${theme.fg("toolTitle", theme.bold("delegate"))} ${theme.fg("muted", summary)}`);
 			return text;
 		},
@@ -172,8 +172,8 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 			const getValidationError = (): string | undefined => {
 				if (!params.title.trim()) return "`title` must be a non-empty string.";
 				if (!params.input.trim()) return "`input` must be a non-empty string.";
-				if (Object.hasOwn(params, "agentPreset") || Object.hasOwn(params, "skills")) return "`agentPreset` and caller-supplied `skills` are no longer supported; configure an agent definition and use `agent` when opening.";
-				if (continuationId && params.agent !== undefined) return "Do not specify `agent` when continuing an existing child session.";
+				if (Object.hasOwn(params, "agentPreset") || Object.hasOwn(params, "skills")) return "`agentPreset` and caller-supplied `skills` are no longer supported; configure an agent definition and use `new_agent` when opening.";
+				if (continuationId && params.new_agent !== undefined) return "Do not specify `new_agent` when continuing an existing child session.";
 				return undefined;
 			};
 			if (continuationId) {
@@ -198,8 +198,8 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 			let resolvedModel: ModelSettings;
 			let definition: AgentSnapshot["definitions"][number];
 			try {
-				const name = params.agent?.trim();
-				if (!name) throw new Error("`agent` is required when opening a child session.");
+				const name = params.new_agent?.trim();
+				if (!name) throw new Error("`new_agent` is required when opening a child session.");
 				if (!root.snapshot || !root.skills) throw new Error("The agent snapshot is not yet validated against the full skill catalog; wait for the root session to start its first turn.");
 				const found = root.snapshot.definitions.find((agent) => agent.name === name);
 				if (!found) throw new Error(`Unknown agent ${JSON.stringify(name)}.`);

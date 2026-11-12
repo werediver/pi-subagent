@@ -29,13 +29,13 @@ export default function (pi) {
       let answer;
       let cost = 0;
       if (role === "root" && text === "root initial" && turnResults.length === 0) {
-        call = { agent: "worker", input: "worker initial", title: "Worker initial" };
+        call = { new_agent: "worker", input: "worker initial", title: "Worker initial" };
       } else if (role === "root" && text === "root continue" && turnResults.length === 0) {
         const prior = context.messages.filter(message => message.role === "toolResult" && message.toolName === "delegate").at(-1);
         if (!prior?.details?.sessionId) throw new Error("previous delegate result did not include a session ID");
         call = { continue_session: prior.details.sessionId, input: "worker continuation", title: "Worker continuation" };
       } else if (role === "worker" && text === "worker initial" && turnResults.length === 0) {
-        call = { agent: "leaf", input: "leaf initial", title: "Leaf initial" };
+        call = { new_agent: "leaf", input: "leaf initial", title: "Leaf initial" };
         cost = 2;
       } else if (role === "worker" && text === "worker continuation") {
         answer = "worker continued";

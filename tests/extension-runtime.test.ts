@@ -56,7 +56,7 @@ test("on-disk subagent.json files have no effect and unresolved models are warne
 	await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
 	try {
 		harness.beforeStart(ctx, ["delegate"]);
-		assert.match(failure(await harness.execute(ctx, { title: "test", input: "test", agent: "worker" })), /"root-provider"\/"configured-name"/);
+		assert.match(failure(await harness.execute(ctx, { title: "test", input: "test", new_agent: "worker" })), /"root-provider"\/"configured-name"/);
 		assert.equal(notifications.length, 1);
 		assert.match(notifications[0].message, /worker\.md.*agent "worker"/);
 		assert.match(notifications[0].message, /"root-provider"\/"configured-name"/);
@@ -117,7 +117,7 @@ test("project preload failure does not claim a duplicate name or model warning b
 		assert.match(modelWarning.message, /"root-provider"\/"user-model"/);
 		assert.ok(!notifications.some(({ message }) => message.includes(projectFile) && /None of the model candidates/.test(message)));
 		assert.ok(!notifications.some(({ message }) => /duplicate agent name "shared"/.test(message)));
-		const error = failure(await harness.execute(ctx, { title: "test", input: "test", agent: "shared" }));
+		const error = failure(await harness.execute(ctx, { title: "test", input: "test", new_agent: "shared" }));
 		assert.match(error, /"root-provider"\/"user-model"/);
 	} finally { await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx); }
 }));
@@ -130,7 +130,7 @@ test("root model context follows lifecycle events and stops on shutdown", withSa
 	const harness = createExtensionHarness();
 	await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
 	assert.equal(harness.beforeStart(ctx, []), undefined);
-	const request = { title: "test", input: "test", agent: "worker" };
+	const request = { title: "test", input: "test", new_agent: "worker" };
 	assert.match(failure(await harness.execute(ctx, request)), /"first"\/"unavailable"/);
 	Object.assign(ctx, { model: second });
 	await harness.emit("model_select", { type: "model_select", model: second, previousModel: first, source: "set" }, ctx);
@@ -160,8 +160,8 @@ test("root snapshots definitions once, validates against full skills, and refres
 	assert.equal(notifications.length, 2, "preflight model warnings are not repeated after the catalog validates");
 	first.beforeStart(ctx, ["delegate"], "prompt", []);
 	const request = { title: "test", input: "test" };
-	assert.match(failure(await first.execute(ctx, { ...request, agent: "first" })), /original-model/);
-	assert.match(failure(await first.execute(ctx, { ...request, agent: "second" })), /unknown agent/i);
+	assert.match(failure(await first.execute(ctx, { ...request, new_agent: "first" })), /original-model/);
+	assert.match(failure(await first.execute(ctx, { ...request, new_agent: "second" })), /unknown agent/i);
 	assert.equal(notifications.length, 2, "no rescanning or duplicate warnings");
 	await first.emit("session_shutdown", { type: "session_shutdown" }, ctx);
 	const next = createExtensionHarness();
@@ -169,8 +169,8 @@ test("root snapshots definitions once, validates against full skills, and refres
 	assert.equal(notifications.length, 2, "missing skill names are deferred until the full catalog is available");
 	next.beforeStart(ctx, [], "prompt", []);
 	next.beforeStart(ctx, [], "prompt", []);
-	assert.match(failure(await next.execute(ctx, { ...request, agent: "first" })), /unknown agent/i);
-	assert.match(failure(await next.execute(ctx, { ...request, agent: "second" })), /unknown agent/i);
+	assert.match(failure(await next.execute(ctx, { ...request, new_agent: "first" })), /unknown agent/i);
+	assert.match(failure(await next.execute(ctx, { ...request, new_agent: "second" })), /unknown agent/i);
 	assert.equal(notifications.length, 3);
 	assert.match(notifications[2].message, /agent\.md.*unknown preloaded skill.*missing/);
 	await next.emit("session_shutdown", { type: "session_shutdown" }, ctx);
@@ -203,7 +203,7 @@ test("opening requires a validated snapshot from the first turn", withSandbox(as
 	const harness = createExtensionHarness();
 	const { ctx } = fakeContext(project);
 	await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
-	const result = await harness.execute(ctx, { title: "test", input: "test", agent: "worker" });
+	const result = await harness.execute(ctx, { title: "test", input: "test", new_agent: "worker" });
 	assert.match(failure(result), /snapshot|first turn|before.agent.start/i);
 	await harness.emit("session_shutdown", { type: "session_shutdown" }, ctx);
 }));
@@ -215,17 +215,18 @@ test("openings validate agent selectors and unknown continuation IDs fail immedi
 	await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
 	assert.equal(harness.tool.name, "delegate");
 	const properties = harness.tool.parameters.properties as Record<string, unknown>;
-	assert.ok("agent" in properties);
+	assert.ok("new_agent" in properties);
+	assert.ok(!("agent" in properties));
 	assert.ok(!("agentPreset" in properties));
 	assert.ok(!("skills" in properties));
 	harness.beforeStart(ctx, []);
 	const request = { title: "title", input: "input" };
-	for (const agent of [undefined, "", "  "]) {
-		assert.match(failure(await harness.execute(ctx, { ...request, agent })), /agent/i);
+	for (const newAgent of [undefined, "", "  "]) {
+		assert.match(failure(await harness.execute(ctx, { ...request, new_agent: newAgent })), /new_agent/i);
 	}
-	assert.match(failure(await harness.execute(ctx, { ...request, agent: "missing" })), /unknown agent/i);
-	for (const agent of ["worker", "", "  "]) {
-		const result = await harness.execute(ctx, { ...request, continue_session: "missing", agent });
+	assert.match(failure(await harness.execute(ctx, { ...request, new_agent: "missing" })), /unknown agent/i);
+	for (const newAgent of ["worker", "", "  "]) {
+		const result = await harness.execute(ctx, { ...request, continue_session: "missing", new_agent: newAgent });
 		assert.match(failure(result), /session ID is unknown/i);
 	}
 	assert.match(failure(await harness.execute(ctx, { ...request, continue_session: "missing" })), /session ID is unknown/i);

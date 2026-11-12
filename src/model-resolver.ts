@@ -95,7 +95,7 @@ export function getAgentAvailability(
 /** Format only agent names and optional descriptions for the delegation prompt. */
 export function formatAgentDigest(definitions: readonly AgentDefinition[]): string {
 	return [
-		"The following agents are available for the `delegate` tool. Set `agent` to one of these names.",
+		"The following agents are available for the `delegate` tool. Set `new_agent` to one of these names.",
 		"<delegate_agent_options>",
 		definitions.map(({ name, description }) => description
 			? `- ${escapeXml(JSON.stringify(oneLine(name)))}: ${escapeXml(oneLine(description))}`

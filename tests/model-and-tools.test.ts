@@ -207,7 +207,7 @@ test("digest contains only safely formatted names and optional descriptions", ()
 	const digest = formatAgentDigest(definitions);
 	assert.doesNotMatch(formatAgentDigest([agentDefinition({ filename: "source-path.md" })]), /source-path/);
 	assert.equal(digest, [
-		"The following agents are available for the `delegate` tool. Set `agent` to one of these names.",
+		"The following agents are available for the `delegate` tool. Set `new_agent` to one of these names.",
 		"<delegate_agent_options>",
 		"- &quot;evil &lt;&amp;\\&quot;&apos;red&quot;: first second &lt;tag&gt; &amp; &quot;&apos;",
 		"- &quot;plain&quot;",
@@ -215,7 +215,7 @@ test("digest contains only safely formatted names and optional descriptions", ()
 	].join("\n"));
 	assert.doesNotMatch(digest, /SECRET|secret-model|agentPreset|\u001b|\u0000/);
 	assert.equal(formatAgentDigest([]), [
-		"The following agents are available for the `delegate` tool. Set `agent` to one of these names.",
+		"The following agents are available for the `delegate` tool. Set `new_agent` to one of these names.",
 		"<delegate_agent_options>",
 		"",
 		"</delegate_agent_options>",

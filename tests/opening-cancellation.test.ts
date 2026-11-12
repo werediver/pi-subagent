@@ -102,7 +102,7 @@ test("pre-aborted opening does not start setup", () => withFixture(async (projec
 	harness.beforeStart(ctx, []);
 	const controller = new AbortController();
 	controller.abort();
-	const result = details(await harness.execute(ctx, { title: "Cancelled", input: "must not run", agent: "worker" }, controller.signal));
+	const result = details(await harness.execute(ctx, { title: "Cancelled", input: "must not run", new_agent: "worker" }, controller.signal));
 	assert.equal(result.status, "cancelled");
 	assert.equal(gate.factoryCalls(), 0, "resource-loader extension factory was not loaded");
 	assert.equal(gate.startCalls(), 0);
@@ -116,7 +116,7 @@ test("setup cancellation returns promptly while tracked opening cleanup remains 
 	await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
 	harness.beforeStart(ctx, []);
 	const controller = new AbortController();
-	const executing = harness.execute(ctx, { title: "Cancelled while binding", input: "must not run", agent: "worker" }, controller.signal);
+	const executing = harness.execute(ctx, { title: "Cancelled while binding", input: "must not run", new_agent: "worker" }, controller.signal);
 	await gate.started;
 	controller.abort();
 	const result = details(await promptly(executing));
@@ -144,7 +144,7 @@ test("a cancelled setup does not retain its child session ID", () => withFixture
 	await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
 	harness.beforeStart(ctx, []);
 	const controller = new AbortController();
-	const executing = harness.execute(ctx, { title: "Cancelled setup", input: "must not run", agent: "worker" }, controller.signal);
+	const executing = harness.execute(ctx, { title: "Cancelled setup", input: "must not run", new_agent: "worker" }, controller.signal);
 	await gate.started;
 	controller.abort();
 	assert.equal(details(await promptly(executing)).status, "cancelled");

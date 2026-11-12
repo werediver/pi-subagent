@@ -32,10 +32,10 @@ The extension reads `~/.pi/agent/agents/*.md` and, in a trusted project, `.pi/ag
 The model sees the names and descriptions of currently available agents when `delegate` is active. It can open a child with a request such as:
 
 ```json
-{ "title": "Review the changes", "input": "Review the current diff for regressions.", "agent": "reviewer" }
+{ "title": "Review the changes", "input": "Review the current diff for regressions.", "new_agent": "reviewer" }
 ```
 
-A successful result includes a session ID. Continue that child with `continue_session` instead of `agent`:
+A successful result includes a session ID. Continue that child with `continue_session` instead of `new_agent`:
 
 ```json
 { "title": "Review the fix", "input": "Check whether the latest change fixes your finding.", "continue_session": "<session-id>" }
@@ -75,7 +75,7 @@ Child sessions create their own Pi model runtimes. Providers must also be availa
 
 ## Request fields
 
-Opening calls require `agent`. Caller-supplied `agentPreset` and `skills` fields are not supported; model, tools, and skills policy belong to the selected agent definition.
+Opening calls require `new_agent`. Caller-supplied `agentPreset` and `skills` fields are not supported; model, tools, and skills policy belong to the selected agent definition.
 
 ## Development
 

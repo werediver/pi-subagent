@@ -47,31 +47,31 @@ export default function (pi) {
       stream.push({ type: "start", partial: message });
       const prompt = users.at(-1);
       let args;
-      if (prompt === "child initial" && turnResults.length === 0) args = { title: "Grandchild", input: "grandchild prompt", agent: "grandchild" };
+      if (prompt === "child initial" && turnResults.length === 0) args = { title: "Grandchild", input: "grandchild prompt", new_agent: "grandchild" };
       if (prompt === "child continuation") {
         const grandchildId = results[0]?.details?.sessionId;
         const calls = [
           { title: "Resume grandchild", input: "grandchild continuation", continue_session: grandchildId },
-          { title: "Child main", input: "child main leaf", agent: "main" },
-          { title: "Child dynamic", input: "child dynamic leaf", agent: "dynamic" },
-          { title: "Child parent", input: "child parent leaf", agent: "parent" },
+          { title: "Child main", input: "child main leaf", new_agent: "main" },
+          { title: "Child dynamic", input: "child dynamic leaf", new_agent: "dynamic" },
+          { title: "Child parent", input: "child parent leaf", new_agent: "parent" },
         ];
         args = calls[turnResults.length];
       }
       if (prompt === "grandchild continuation") {
         const calls = [
-          { title: "Grandchild main", input: "grandchild main leaf", agent: "main" },
-          { title: "Grandchild dynamic", input: "grandchild dynamic leaf", agent: "dynamic" },
-          { title: "Grandchild parent", input: "grandchild parent leaf", agent: "parent" },
+          { title: "Grandchild main", input: "grandchild main leaf", new_agent: "main" },
+          { title: "Grandchild dynamic", input: "grandchild dynamic leaf", new_agent: "dynamic" },
+          { title: "Grandchild parent", input: "grandchild parent leaf", new_agent: "parent" },
         ];
         args = calls[turnResults.length];
       }
       if (prompt === "no root model") {
         const calls = [
-          { title: "Missing provider", input: "must not run dynamic", agent: "dynamic" },
-          { title: "Missing main", input: "must not run main", agent: "main" },
-          { title: "Caller inheritance", input: "no root inherited leaf", agent: "inherit" },
-          { title: "Explicit fallback", input: "no root fallback leaf", agent: "fallback" },
+          { title: "Missing provider", input: "must not run dynamic", new_agent: "dynamic" },
+          { title: "Missing main", input: "must not run main", new_agent: "main" },
+          { title: "Caller inheritance", input: "no root inherited leaf", new_agent: "inherit" },
+          { title: "Explicit fallback", input: "no root fallback leaf", new_agent: "fallback" },
         ];
         args = calls[turnResults.length];
       }
@@ -174,12 +174,12 @@ test("nested sessions share the agent snapshot while root models remain live, un
 		const missingAgent = (await harness.execute(ctx, { title: "Missing agent", input: "must not run" })).details as DelegateCmdResult;
 		assert.equal(missingAgent.status, "failed");
 		assert.match(missingAgent.error!, /agent/i);
-		const unknownAgent = (await harness.execute(ctx, { title: "Unknown agent", input: "must not run", agent: "unknown" })).details as DelegateCmdResult;
+		const unknownAgent = (await harness.execute(ctx, { title: "Unknown agent", input: "must not run", new_agent: "unknown" })).details as DelegateCmdResult;
 		assert.equal(unknownAgent.status, "failed");
 		assert.match(unknownAgent.error!, /unknown.*agent|agent.*unknown/i);
 		const records = () => readFileSync(logPath, "utf8").trim().split("\n").map(line => JSON.parse(line));
 		const requests = () => records().filter(r => r.type === "request");
-		const initialToolResult = await harness.execute(ctx, { title: "Child", input: "child initial", agent: "child" });
+		const initialToolResult = await harness.execute(ctx, { title: "Child", input: "child initial", new_agent: "child" });
 		const initial = initialToolResult.details as DelegateCmdResult;
 		assert.deepEqual(initialToolResult.usage, {
 			input: 3, output: 6, cacheRead: 0, cacheWrite: 0, totalTokens: 9,
@@ -216,9 +216,9 @@ test("nested sessions share the agent snapshot while root models remain live, un
 		assert.ok(grandchildId);
 		assert.notEqual(grandchildId, initial.sessionId);
 		await harness.emit("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() }, ctx);
-		const invalidContinuation = (await harness.execute(ctx, { title: "Invalid continuation", input: "must not run", agent: "child", continue_session: initial.sessionId })).details as DelegateCmdResult;
+		const invalidContinuation = (await harness.execute(ctx, { title: "Invalid continuation", input: "must not run", new_agent: "child", continue_session: initial.sessionId })).details as DelegateCmdResult;
 		assert.equal(invalidContinuation.status, "failed");
-		assert.match(invalidContinuation.error!, /agent/i);
+		assert.match(invalidContinuation.error!, /new_agent/i);
 		const afterInvalid = (await harness.execute(ctx, { title: "Valid but skipped", input: "must be skipped after invalid", continue_session: initial.sessionId })).details as DelegateCmdResult;
 		assert.equal(afterInvalid.status, "failed");
 		assert.match(afterInvalid.error!, /skipped because the previous continuation failed/i);
@@ -229,7 +229,7 @@ test("nested sessions share the agent snapshot while root models remain live, un
 		// disables delegate, making continuation reuse observable.
 		putAgent("child", leafRules, "RELOADED-CHILD-BODY");
 		putAgent("dynamic", `model: { id: alternate-model, thinkingLevel: low }\n${leafRules}`, "RELOADED-DYNAMIC-BODY");
-		const afterEdit = (await harness.execute(ctx, { title: "New after edit", input: "new after edit", agent: "child" })).details as DelegateCmdResult;
+		const afterEdit = (await harness.execute(ctx, { title: "New after edit", input: "new after edit", new_agent: "child" })).details as DelegateCmdResult;
 		assert.equal(afterEdit.status, "completed", JSON.stringify(afterEdit));
 		assert.ok(afterEdit.sessionId);
 		const newChild = requests().find(r => r.users.at(-1) === "new after edit");
@@ -308,7 +308,7 @@ test("nested sessions share the agent snapshot while root models remain live, un
 			}
 		}
 
-		const selectedModelFailure = (await harness.execute(ctx, { title: "No request fallback", input: "fail after selection", agent: "no-request-fallback" })).details as DelegateCmdResult;
+		const selectedModelFailure = (await harness.execute(ctx, { title: "No request fallback", input: "fail after selection", new_agent: "no-request-fallback" })).details as DelegateCmdResult;
 		assert.equal(selectedModelFailure.status, "failed");
 		assert.match(selectedModelFailure.error!, /intentional selected model failure/);
 		const failedSelectedRequests = byPrompt("fail after selection");
@@ -352,7 +352,7 @@ test("nested sessions share the agent snapshot while root models remain live, un
 		const stale = (await reloadedHarness.execute(ctx, { title: "Old ID", input: "stale", continue_session: initial.sessionId })).details as DelegateCmdResult;
 		assert.equal(stale.status, "failed");
 		assert.match(stale.error!, /unknown, expired, or cwd-mismatched/);
-		const fresh = (await reloadedHarness.execute(ctx, { title: "Reloaded", input: "reload leaf", agent: "dynamic" })).details as DelegateCmdResult;
+		const fresh = (await reloadedHarness.execute(ctx, { title: "Reloaded", input: "reload leaf", new_agent: "dynamic" })).details as DelegateCmdResult;
 		assert.equal(fresh.status, "completed", JSON.stringify(fresh));
 		assert.ok(fresh.sessionId);
 		assert.notEqual(fresh.sessionId, initial.sessionId);
@@ -364,7 +364,7 @@ test("nested sessions share the agent snapshot while root models remain live, un
 		assert.match(reloadedLeaf[0].systemPrompt, /RELOADED-DYNAMIC-BODY/);
 		assert.doesNotMatch(reloadedLeaf[0].systemPrompt, /DYNAMIC-AGENT-BODY|NESTED-SKILL-BODY|ROOT-ONLY-SKILL-BODY/);
 		assert.ok(!reloadedLeaf[0].tools.includes("delegate"));
-		const freshChild = (await reloadedHarness.execute(ctx, { title: "Reloaded child", input: "reload child", agent: "child" })).details as DelegateCmdResult;
+		const freshChild = (await reloadedHarness.execute(ctx, { title: "Reloaded child", input: "reload child", new_agent: "child" })).details as DelegateCmdResult;
 		assert.equal(freshChild.status, "completed", JSON.stringify(freshChild));
 		const reloadedChild = byPrompt("reload child")[0];
 		assert.match(reloadedChild.systemPrompt, /RELOADED-CHILD-BODY/);

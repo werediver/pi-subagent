@@ -4,9 +4,9 @@
 
 ## Request forms
 
-An opening delegation omits `continue_session` or specifies it as an empty string, and must name an `agent`. The selected definition is bound to the child session. See [Agent definitions](./DESIGN_DEF.md#invocation) for the invocation contract and agent configuration.
+An opening delegation omits `continue_session` or specifies it as an empty string, and must name a `new_agent`. The selected definition is bound to the child session. See [Agent definitions](./DESIGN_DEF.md#invocation) for the invocation contract and agent configuration.
 
-A continuation delegation specifies `continue_session` with a previously returned session ID. It must not specify `agent`: the child’s existing configuration is reused. The `input` is appended as a new user turn. An unknown, expired, or cwd-mismatched ID fails the tool call.
+A continuation delegation specifies `continue_session` with a previously returned session ID. It must not specify `new_agent`: the child’s existing configuration is reused. The `input` is appended as a new user turn. An unknown, expired, or cwd-mismatched ID fails the tool call.
 
 ## Session lifetime
 

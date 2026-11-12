@@ -104,13 +104,13 @@ The `delegate` contract is:
 type DelegateRequest = {
   title: string;
   input: string;
-  agent?: string;          // required for opening delegations
+  new_agent?: string;      // required for opening delegations
   continue_session?: string;
 };
 ```
 
-- `agent` is required for an opening delegation and is bound to the child session.
-- A continuation must not specify `agent`; the existing child's configuration is reused.
+- `new_agent` is required for an opening delegation and is bound to the child session.
+- A continuation must not specify `new_agent`; the existing child's configuration is reused.
 - `title`, `input`, the result envelope, continuation ordering, and in-process child sessions are unchanged.
 
 ## Digest

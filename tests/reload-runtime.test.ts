@@ -41,7 +41,7 @@ export default function (pi) {
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() };
       let args;
-      if (!turnResults.length && prompt === "create child") args = { title: "Child", input: "child request", agent: "child" };
+      if (!turnResults.length && prompt === "create child") args = { title: "Child", input: "child request", new_agent: "child" };
       if (!turnResults.length && prompt.startsWith("continue child ")) args = { title: "Continue", input: "child continuation", continue_session: prompt.slice("continue child ".length) };
       if (args) {
         const call = { type: "toolCall", id: "delegate-call", name: "delegate", arguments: args };
