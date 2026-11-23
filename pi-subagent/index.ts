@@ -27,7 +27,7 @@ const DelegateCmdParams = Type.Object({
 	title: Type.String({ minLength: 1, description: "Short task description; prefer imperative form" }),
 	input: Type.String({ minLength: 1, description: "The task to delegate or a response in a dialog" }),
 	new_agent: Type.Optional(Type.String({ description: "Agent definition for a new child session; required when opening" })),
-	continue_session: Type.Optional(Type.String({ description: "The ID of an existing child session to continue; omit or leave empty to start a new child session" })),
+	continue_session: Type.Optional(Type.String({ description: "The ID of an existing child session to continue, in <agent_name>:<index> form (e.g. scout:1) as returned by a previous delegation request; omit or leave empty to start a new child session" })),
 });
 export type DelegateCmdParams = Static<typeof DelegateCmdParams>;
 
@@ -265,6 +265,8 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 						if (definition.tools.length > 0) session.setActiveToolsByName(evaluateToolAccess(definition.tools, session.getAllTools().map((tool) => tool.name)));
 						checkOpeningActive();
 						child = {
+							id: registry.allocateId(definition.name),
+							agentName: definition.name,
 							session,
 							cwd: ctx.cwd,
 							nestedRegistry,
@@ -278,12 +280,12 @@ function registerExtension(pi: ExtensionAPI, root: RootSharedState, registry = n
 						finishSetup();
 						const result = await child.queue.startInitial({ input: params.input, signal: abortSignal, onUpdate, theme: ctx.ui.theme }, batch);
 						reportedUsage = result.usage;
-						if (result.status !== "completed") { registry.remove(child.session.sessionId, child); await disposeChild(child); return result; }
-						result.sessionId = child.session.sessionId;
+						if (result.status !== "completed") { registry.remove(child.id, child); await disposeChild(child); return result; }
+						result.sessionId = child.id;
 						return result;
 					} catch (error) {
 						try {
-							if (child) { registry.remove(child.session.sessionId, child); await disposeChild(child); }
+							if (child) { registry.remove(child.id, child); await disposeChild(child); }
 							else {
 								try { await nestedRegistry.close(); }
 								finally {

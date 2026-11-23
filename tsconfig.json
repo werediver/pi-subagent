@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts"]
+  "include": ["pi-subagent/**/*.ts", "tests/**/*.ts"]
 }

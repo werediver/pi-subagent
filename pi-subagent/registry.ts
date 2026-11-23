@@ -2,6 +2,10 @@ import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { ContinuationQueue } from "./queue.ts";
 
 export type ChildSession = {
+	// Extension-owned handle in `<agent_name>:<per-agent index>` form (e.g. "scout:1").
+	// Distinct from Pi's AgentSession.sessionId (a UUIDv7), which is never exposed.
+	id: string;
+	agentName: string;
 	session: AgentSession;
 	cwd: string;
 	queue: ContinuationQueue;
@@ -12,15 +16,23 @@ export type ChildSession = {
 
 export class ChildRegistry {
 	private readonly children = new Map<string, ChildSession>();
+	private readonly counters = new Map<string, number>();
 	private readonly openings = new Set<Promise<unknown>>();
 	private closed = false;
 	private closing: Promise<void> | undefined;
 
 	isClosed(): boolean { return this.closed; }
 	get(id: string): ChildSession | undefined { return this.children.get(id); }
+	/** Allocate the next handle for an agent in this registry, e.g. "scout:1", "scout:2". Monotonic per agent within this registry's lifetime; never reused, even after removal. */
+	allocateId(agentName: string): string {
+		if (this.closed) throw new Error("The extension runtime is shutting down.");
+		const next = (this.counters.get(agentName) ?? 0) + 1;
+		this.counters.set(agentName, next);
+		return `${agentName}:${next}`;
+	}
 	add(child: ChildSession): void {
 		if (this.closed) throw new Error("The extension runtime is shutting down.");
-		this.children.set(child.session.sessionId, child);
+		this.children.set(child.id, child);
 	}
 	remove(id: string, child: ChildSession): void {
 		if (this.children.get(id) === child) this.children.delete(id);
@@ -44,6 +56,7 @@ export class ChildRegistry {
 				Promise.allSettled(openings),
 			]);
 			this.children.clear();
+			this.counters.clear();
 			const failures = [...childResults, ...openingResults].filter((result): result is PromiseRejectedResult => result.status === "rejected");
 			if (failures.length) throw new AggregateError(failures.map((result) => result.reason), "Could not close all child sessions.");
 		})();

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { createExtensionHarness, fakeContext } from "./extension-harness.ts";
-import type { DelegateCmdResult } from "../src/result.ts";
+import type { DelegateCmdResult } from "../pi-subagent/result.ts";
 
 const ENV_AGENT_DIR = "PI_CODING_AGENT_DIR";
 const GATE_KEY = "pi-subagent-opening-cancellation-test";

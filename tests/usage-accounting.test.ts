@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import { ContinuationQueue } from "../src/queue.ts";
-import { createDelegateToolResult, type DelegateCmdResult } from "../src/result.ts";
-import { runChildRequest } from "../src/runner.ts";
-import type { ChildSession } from "../src/registry.ts";
-import { aggregateUsageEntries, type ReportedUsage } from "../src/usage.ts";
+import { ContinuationQueue } from "../pi-subagent/queue.ts";
+import { createDelegateToolResult, type DelegateCmdResult } from "../pi-subagent/result.ts";
+import { runChildRequest } from "../pi-subagent/runner.ts";
+import type { ChildSession } from "../pi-subagent/registry.ts";
+import { aggregateUsageEntries, type ReportedUsage } from "../pi-subagent/usage.ts";
 
 function usage(input: number, output = 0, cacheRead = 0, cacheWrite = 0, cost = input + output + cacheRead + cacheWrite): ReportedUsage {
 	return {

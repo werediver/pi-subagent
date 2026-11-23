@@ -6,11 +6,11 @@
 
 An opening delegation omits `continue_session` or specifies it as an empty string, and must name a `new_agent`. The selected definition is bound to the child session. See [Agent definitions](./DESIGN_DEF.md#invocation) for the invocation contract and agent configuration.
 
-A continuation delegation specifies `continue_session` with a previously returned session ID. It must not specify `new_agent`: the child’s existing configuration is reused. The `input` is appended as a new user turn. An unknown, expired, or cwd-mismatched ID fails the tool call.
+A continuation delegation specifies `continue_session` with a previously returned session ID. Session IDs are extension-owned handles in `<agent_name>:<per-agent index>` form (e.g. `scout:1`, `scout:2`), allocated monotonically per agent name within the opening parent’s registry and never reused within that registry’s lifetime; a nested parent has its own registry and therefore its own sequence. Pi’s own session UUIDs are internal and never exposed. It must not specify `new_agent`: the child’s existing configuration is reused. The `input` is appended as a new user turn. An unknown, expired, or cwd-mismatched ID fails the tool call.
 
 ## Session lifetime
 
-Child sessions are retained in memory for the lifetime of the current extension runtime. They are process-local handles rather than durable identifiers. Extension reload cancels active work, discards queued work, disposes child sessions, and invalidates their IDs. Cancellation of an opening is reported promptly, but Pi’s resource reload, session creation, and extension binding do not accept cancellation signals. An in-flight setup stage may therefore continue; the extension stops before subsequent stages and cleans up after that stage settles, while runtime shutdown waits for the tracked opening. Persistent child sessions and indefinite retention are future work.
+Child sessions are retained in memory for the lifetime of the current extension runtime. They are process-local handles rather than durable identifiers. Extension reload cancels active work, discards queued work, disposes child sessions, and invalidates their IDs. Because the per-agent sequence restarts with the new registry, a stale handle may coincide with a fresh child of the same agent opened after reload; callers must not reuse handles across a reload. Cancellation of an opening is reported promptly, but Pi’s resource reload, session creation, and extension binding do not accept cancellation signals. An in-flight setup stage may therefore continue; the extension stops before subsequent stages and cleans up after that stage settles, while runtime shutdown waits for the tracked opening. Persistent child sessions and indefinite retention are future work.
 
 ## Continuation ordering
 
@@ -25,7 +25,7 @@ Only a successfully completed request exposes the session ID. The agent-readable
 ```xml
 <delegate_result>
   <status>completed</status>
-  <session_id>...</session_id>
+  <session_id>scout:1</session_id>
   <text>...</text>
 </delegate_result>
 ```

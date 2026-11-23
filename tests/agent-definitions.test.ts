@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAgentSnapshot, captureAgentSources, discoverAgentSnapshot, preflightAgentSources } from "../src/agent-definitions.ts";
-import { evaluateToolAccess } from "../src/tool-access.ts";
+import { buildAgentSnapshot, captureAgentSources, discoverAgentSnapshot, preflightAgentSources } from "../pi-subagent/agent-definitions.ts";
+import { evaluateToolAccess } from "../pi-subagent/tool-access.ts";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 
 function fixture(run: (f: { dirs: { project: string; user: string }; put: (scope: "project" | "user", file: string, text: string) => string; capture: (trusted?: boolean) => ReturnType<typeof captureAgentSources>; discover: (trusted?: boolean, skills?: string[]) => ReturnType<typeof discoverAgentSnapshot> }) => void) {

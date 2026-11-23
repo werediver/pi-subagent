@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import registerExtension from "../src/index.ts";
+import registerExtension from "../pi-subagent/index.ts";
 
 function writeProvider(agentDir: string) {
 	const aiPath = fileURLToPath(import.meta.resolve("@earendil-works/pi-ai"));

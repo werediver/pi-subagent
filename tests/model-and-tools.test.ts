@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Model } from "@earendil-works/pi-ai";
-import { AgentModelNotFoundError, AgentProviderAuthNotConfiguredError, formatAgentDigest, getAgentAvailability, resolveAgentModel, type ModelSettings } from "../src/model-resolver.ts";
-import { evaluateToolAccess } from "../src/tool-access.ts";
-import { buildAgentSnapshot, type AgentDefinition } from "../src/agent-definitions.ts";
+import { AgentModelNotFoundError, AgentProviderAuthNotConfiguredError, formatAgentDigest, getAgentAvailability, resolveAgentModel, type ModelSettings } from "../pi-subagent/model-resolver.ts";
+import { evaluateToolAccess } from "../pi-subagent/tool-access.ts";
+import { buildAgentSnapshot, type AgentDefinition } from "../pi-subagent/agent-definitions.ts";
 
 type ModelContext = Parameters<typeof resolveAgentModel>[1];
 

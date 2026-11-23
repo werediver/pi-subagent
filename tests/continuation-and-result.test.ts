@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import { ContinuationQueue, type QueuedRequest } from "../src/queue.ts";
-import { ChildRegistry, disposeChild, type ChildSession } from "../src/registry.ts";
-import { createDelegateToolResult, formatDelegateResult, getAssistantText, getDelegateOutcome, resultError, type DelegateCmdResult } from "../src/result.ts";
+import { ContinuationQueue, type QueuedRequest } from "../pi-subagent/queue.ts";
+import { ChildRegistry, disposeChild, type ChildSession } from "../pi-subagent/registry.ts";
+import { createDelegateToolResult, formatDelegateResult, getAssistantText, getDelegateOutcome, resultError, type DelegateCmdResult } from "../pi-subagent/result.ts";
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
@@ -284,8 +284,26 @@ test("outcome uses the last assistant message, maps stop reasons and extracts te
 
 function child(id: string, events: string[], abort: () => Promise<void> = async () => {}): ChildSession {
 	const childSession = session(async () => { events.push(`abort:${id}`); await abort(); }, () => { events.push(`dispose:${id}`); }, id);
-	return { session: childSession, cwd: "/", queue: new ContinuationQueue(async () => completed("unused"), childSession), nestedRegistry: new ChildRegistry() };
+	return { id, agentName: id, session: childSession, cwd: "/", queue: new ContinuationQueue(async () => completed("unused"), childSession), nestedRegistry: new ChildRegistry() };
 }
+
+test("allocated child IDs are per-agent indexes in <agent_name>:<index> form", async () => {
+	const registry = new ChildRegistry();
+	assert.equal(registry.allocateId("scout"), "scout:1");
+	assert.equal(registry.allocateId("scout"), "scout:2");
+	assert.equal(registry.allocateId("reviewer"), "reviewer:1");
+	// Counters are scoped to this registry; a nested registry starts its own sequence.
+	const nested = new ChildRegistry();
+	assert.equal(nested.allocateId("scout"), "scout:1");
+	// Removal does not free an index for reuse.
+	const events: string[] = [];
+	const first = { ...child("scout:1", events) };
+	registry.add(first);
+	registry.remove(first.id, first);
+	assert.equal(registry.allocateId("scout"), "scout:3");
+	await registry.close();
+	assert.throws(() => registry.allocateId("scout"), /shutting down/);
+});
 
 test("registry removal is identity-safe and shutdown disposes nested children before parents once", async () => {
 	const events: string[] = [];
@@ -395,7 +413,7 @@ test("registry close aborts and disposes a child while its opening operation set
 		active.resolve(resultError("cancelled", "closed"));
 	}, () => { events.push("dispose:opening"); }, "opening");
 	const child: ChildSession = {
-		session: childSession, cwd: "/",
+		id: "opening", agentName: "opening", session: childSession, cwd: "/",
 		queue: new ContinuationQueue((request) => {
 			request.signal.addEventListener("abort", () => { void childSession.abort(); }, { once: true });
 			return active.promise;
@@ -408,7 +426,7 @@ test("registry close aborts and disposes a child while its opening operation set
 		registered.resolve(undefined);
 		const result = await child.queue.startInitial(request("initial"), Symbol("opening-turn"));
 		if (result.status !== "completed") {
-			registry.remove(child.session.sessionId, child);
+			registry.remove(child.id, child);
 			await disposeChild(child);
 		}
 		return result;

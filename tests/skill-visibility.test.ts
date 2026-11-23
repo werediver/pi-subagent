@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG_DIR_NAME, ModelRegistry, ModelRuntime, type Skill } from "@earendil-works/pi-coding-agent";
 import { createExtensionHarness, fakeContext } from "./extension-harness.ts";
-import type { DelegateCmdResult } from "../src/result.ts";
+import type { DelegateCmdResult } from "../pi-subagent/result.ts";
 
 // Every child (including descendants) discovers its own network-free provider.
 function writeProvider(agentDir: string, logPath: string, discoveredSkillPath: string) {
@@ -162,8 +162,8 @@ test("real child skill visibility, explicit expansion, descendants and reload", 
 		await run(harness, "public initial", { new_agent: "public" });
 		await run(harness, "quiet initial", { new_agent: "quiet" });
 		await run(harness, "default initial", { new_agent: "default" });
-		const spawnPrivateId = await run(harness, "spawn private", { new_agent: "public" });
-		const spawnPublicId = await run(harness, "spawn public", { new_agent: "private" });
+		await run(harness, "spawn private", { new_agent: "public" });
+		await run(harness, "spawn public", { new_agent: "private" });
 
 		// A new child still uses the captured definition until the root is reloaded.
 		putAgent("private", "skills:\n  allowDiscovery: true\n  preload: [preloaded]\n");
@@ -257,19 +257,27 @@ test("real child skill visibility, explicit expansion, descendants and reload", 
 			};
 			const descendantPrivateId = descendant("spawn private");
 			const descendantPublicId = descendant("spawn public");
-			const allIds = [...openedIds, descendantPrivateId, descendantPublicId];
-			assert.equal(new Set(allIds).size, 10);
-			assert.deepEqual(new Set(lifecycle.map(event => event.id)), new Set(allIds));
-			for (const id of allIds) {
+			// Extension handles are per-registry <agent_name>:<index> values and
+			// repeat across nesting levels and reload generations; lifecycle
+			// events below are keyed by Pi's internal session UUIDs instead.
+			assert.deepEqual(openedIds, ["private:1", "public:1", "quiet:1", "default:1", "public:2", "private:2", "private:3", "private:1"]);
+			assert.deepEqual([descendantPrivateId, descendantPublicId], ["private:1", "public:1"]);
+			const lifecycleIds = [...new Set(lifecycle.map(event => event.id))];
+			assert.equal(lifecycleIds.length, 10, "each child and descendant has its own Pi session");
+			for (const id of lifecycleIds) {
 				assert.deepEqual(lifecycle.filter(event => event.id === id).map(({ type, reason }) => ({ type, reason })), [
 					{ type: "session_start", reason: "startup" },
 					{ type: "resources_discover", reason: "startup" },
 					{ type: "session_shutdown", reason: "quit" },
 				], `lifecycle for ${id}`);
 			}
-			for (const [parentId, childId] of [[spawnPrivateId, descendantPrivateId], [spawnPublicId, descendantPublicId]]) {
+			// session_start order is creation order: spawnPrivate, its descendant,
+			// spawnPublic, its descendant occupy positions 4-7 (0-based).
+			const startOrder = [...new Set(lifecycle.filter(event => event.type === "session_start").map(event => event.id))];
+			assert.equal(startOrder.length, 10);
+			for (const [parentIndex, childIndex] of [[4, 5], [6, 7]] as const) {
 				const shutdownIndex = (id: string) => lifecycle.findIndex(event => event.id === id && event.type === "session_shutdown");
-				assert.ok(shutdownIndex(childId) < shutdownIndex(parentId), "descendant should shut down before its parent");
+				assert.ok(shutdownIndex(startOrder[childIndex]) < shutdownIndex(startOrder[parentIndex]), "descendant should shut down before its parent");
 			}
 		});
 		await t.test("snapshot retains policy until reload", () => {

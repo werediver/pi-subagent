@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import extension from "../src/index.ts";
-import type { DelegateCmdResult } from "../src/result.ts";
+import extension from "../pi-subagent/index.ts";
+import type { DelegateCmdResult } from "../pi-subagent/result.ts";
 
 test("session reload refreshes captured agent definitions and Pi resources and invalidates child IDs", async () => {
 	const root = mkdtempSync(join(tmpdir(), "pi-reload-runtime-"));
@@ -172,7 +172,11 @@ export default function (pi) {
 		assert.equal(delegateResults[3].isError, false, JSON.stringify(delegateResults[3]));
 		assert.equal(delegateResults[3].details.status, "completed");
 		assert.ok(delegateResults[3].details.sessionId);
-		assert.notEqual(delegateResults[3].details.sessionId, childId);
+		// IDs are per-registry <agent_name>:<index> handles, so a reloaded registry
+		// restarts the sequence: the fresh child reuses "child:1". Stale-ID
+		// invalidation is only guaranteed while no new child of that agent exists.
+		assert.equal(childId, "child:1");
+		assert.equal(delegateResults[3].details.sessionId, "child:1");
 		const requests = readFileSync(providerLog, "utf8").trim().split("\n").map(line => JSON.parse(line) as { prompt: string; results: number; systemPrompt: string; reasoning?: string });
 		const childRequests = requests.filter(r => r.prompt === "child request");
 		assert.equal(childRequests.length, 2);

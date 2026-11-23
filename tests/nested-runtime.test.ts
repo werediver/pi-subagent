@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG_DIR_NAME, ModelRegistry, ModelRuntime, type Skill } from "@earendil-works/pi-coding-agent";
 import { createExtensionHarness, fakeContext } from "./extension-harness.ts";
-import type { DelegateCmdResult } from "../src/result.ts";
+import type { DelegateCmdResult } from "../pi-subagent/result.ts";
 
 // This extension is discovered separately by every real nested resource loader. In
 // particular, its provider is not registered on the root's model runtime.

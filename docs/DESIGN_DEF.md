@@ -105,11 +105,11 @@ type DelegateRequest = {
   title: string;
   input: string;
   new_agent?: string;      // required for opening delegations
-  continue_session?: string;
+  continue_session?: string;      // "<agent_name>:<index>" from a previous result, e.g. scout:1
 };
 ```
 
-- `new_agent` is required for an opening delegation and is bound to the child session.
+- `new_agent` is required for an opening delegation and is bound to the child session. The returned `sessionId` is an extension handle `<agent_name>:<per-agent index>` (e.g. `scout:1`), not Pi’s session UUID.
 - A continuation must not specify `new_agent`; the existing child's configuration is reused.
 - `title`, `input`, the result envelope, continuation ordering, and in-process child sessions are unchanged.
 

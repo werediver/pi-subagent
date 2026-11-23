@@ -6,9 +6,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { ContinuationQueue } from "../src/queue.ts";
-import { runChildRequest } from "../src/runner.ts";
-import type { ChildSession } from "../src/registry.ts";
+import { ContinuationQueue } from "../pi-subagent/queue.ts";
+import { runChildRequest } from "../pi-subagent/runner.ts";
+import type { ChildSession } from "../pi-subagent/registry.ts";
 
 const GATE_KEY = "pi-extension-active-cancellation-test";
 

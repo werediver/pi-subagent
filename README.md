@@ -6,7 +6,7 @@ This extension adds a `delegate` tool to Pi. A caller selects a predefined agent
 
 Requires Pi coding-agent 1.5.0 or later; older versions are not supported.
 
-Install this directory as a Pi package (for example, `pi install /path/to/pi-subagent`), or load `src/index.ts` as an extension. Then create at least one agent definition, for example `~/.pi/agent/agents/reviewer.md`:
+Install this directory as a Pi package (for example, `pi install /path/to/pi-subagent`), or load `pi-subagent/index.ts` as an extension. Then create at least one agent definition, for example `~/.pi/agent/agents/reviewer.md`:
 
 ```markdown
 ---
@@ -35,11 +35,13 @@ The model sees the names and descriptions of currently available agents when `de
 { "title": "Review the changes", "input": "Review the current diff for regressions.", "new_agent": "reviewer" }
 ```
 
-A successful result includes a session ID. Continue that child with `continue_session` instead of `new_agent`:
+A successful result includes a session ID in `<agent_name>:<index>` form (e.g. `reviewer:1`, `reviewer:2` for successive reviewers). Continue that child with `continue_session` instead of `new_agent`:
 
 ```json
-{ "title": "Review the fix", "input": "Check whether the latest change fixes your finding.", "continue_session": "<session-id>" }
+{ "title": "Review the fix", "input": "Check whether the latest change fixes your finding.", "continue_session": "reviewer:1" }
 ```
+
+These IDs are extension handles, not Pi session UUIDs; they are scoped to the parent session that opened them (a nested delegation gets its own sequence).
 
 A child starts with its own conversation, so include the relevant task context. Its agent configuration remains bound across continuations. Continuations of one child are serialized; different children can run concurrently. IDs are in-memory and become invalid on `/reload` or session shutdown. See [child session reuse](docs/DESIGN_REUSE.md) for ordering and results.
 

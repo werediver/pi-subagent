@@ -1,7 +1,7 @@
 import type { Model } from "@earendil-works/pi-ai";
 import type { BeforeAgentStartEvent, BeforeAgentStartEventResult, ExtensionAPI, ExtensionContext, ToolDefinition, Skill } from "@earendil-works/pi-coding-agent";
-import type { DelegateCmdParams } from "../src/index.ts";
-import registerExtension from "../src/index.ts";
+import type { DelegateCmdParams } from "../pi-subagent/index.ts";
+import registerExtension from "../pi-subagent/index.ts";
 
 export function fakeModel(provider = "test-provider", id = "test-model"): Model<"openai-completions"> {
 	return {
